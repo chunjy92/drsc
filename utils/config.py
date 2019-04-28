@@ -4,6 +4,8 @@ import argparse
 
 import tensorflow as tf
 
+from utils import const
+
 __author__ = 'Jayeol Chun'
 
 
@@ -11,6 +13,12 @@ parser = argparse.ArgumentParser("DRSC Argparser")
 
 parser.add_argument("--model_dir", required=True,
                     help="path to model output directory")
+
+parser.add_argument("--model", choices=const.MODELS,
+                    help="which model to use")
+
+parser.add_argument("--embedding", choices=const.EMBEDDINGS,
+                    help="which embedding to use")
 
 
 def parse_args():

@@ -1,0 +1,217 @@
+#! /usr/bin/python3
+# -*- coding: utf-8 -*-
+import codecs
+import json
+import os
+
+import tensorflow as tf
+
+from utils import const
+from .PDTBRelation import PDTBRelation
+
+__author__ = 'Jayeol Chun'
+
+
+class PDTBProcessor(object):
+  """PDTB Data Loader
+
+  Wraps each relation as `DiscourseRelation` object, defined in
+  `data/DiscourseRelations.py`
+
+  """
+  def __init__(self,
+               data_dir=const.CONLL,
+               max_arg_length=128,
+               truncation_mode='normal',
+               do_lower_case=False,
+               sense_type="all",
+               sense_level=2,
+               multiple_senses_action="pick_first"):
+    # root data dir
+    self.data_dir = data_dir
+
+    # sense config
+    self.sense_type = sense_type
+    self.sense_level = sense_level
+    self.multiple_senses_action = multiple_senses_action
+
+    # preprocessing config
+    self.max_arg_length = max_arg_length
+    self.truncation_mode = truncation_mode
+    self.do_lower_case = do_lower_case
+
+    # set of vocab and labels
+    self._vocab = None
+    self._labels = None
+
+  @property
+  def vocab(self):
+    return self._vocab
+
+  @property
+  def labels(self):
+    return self._labels
+
+  def compile_labels(self, train_instances=None):
+    """Collects unique label set from training instances"""
+    if self.labels is not None:
+      return
+
+    tf.logging.info("Compiling labels from training set")
+    if not train_instances:
+      train_instances = self.get_train_examples()
+
+    labels = set()
+    for instance in train_instances:
+      labels.add(instance.label)
+
+    self._labels = sorted(labels)
+
+  def compile_vocab_labels(self, train_instances=None):
+    """Collects unique vocab and label set from training instances"""
+    if self.vocab is not None and self.labels is not None:
+      return
+
+    tf.logging.info("Compiling vocab and labels from training set")
+    if not train_instances:
+      train_instances = self.get_train_examples()
+
+    vocab, labels = set(), set()
+    for instance in train_instances:
+      vocab.update(instance.arg1)
+      vocab.update(instance.arg2)
+      if instance.conn: # connective may not exist
+        vocab.update(instance.conn)
+      labels.update(instance.label_list)
+
+    self._vocab = sorted(vocab)
+    self._labels = sorted(labels)
+
+  def get_label_mapping(self):
+    label_map = {}
+    for (i, label) in enumerate(self.labels):
+      label_map[label] = i
+    return label_map
+
+  def get_train_examples(self, rel_filename=None, parse_filename=None):
+    rel_filename = rel_filename if rel_filename else \
+      "pdtb-data-01-20-15-train.json"
+    parse_filename = parse_filename if parse_filename else \
+      "pdtb-parses-01-12-15-train.json"
+    return self._create_examples("train", rel_filename, parse_filename)
+
+  def get_dev_examples(self, rel_filename=None, parse_filename=None):
+    rel_filename = rel_filename if rel_filename else \
+      "pdtb-data-01-20-15-dev.json"
+    parse_filename = parse_filename if parse_filename else \
+      "pdtb-parses-01-12-15-dev.json"
+    return self._create_examples("dev", rel_filename, parse_filename)
+
+  def get_test_examples(self, rel_filename=None, parse_filename=None):
+    rel_filename = rel_filename if rel_filename else \
+      "relations.json"
+    parse_filename = parse_filename if parse_filename else \
+      "parses.json"
+    return self._create_examples("test", rel_filename, parse_filename)
+
+  def _create_examples(self, dataset_type, rel_filename, parse_filename):
+    """Both Explicit and Implicit examples
+
+    Args:
+      data_dir: path to DRC dataset root
+      dataset_type: all, implicit or explicit
+
+    Returns:
+      list of InputExamples
+    """
+    dataset_dir = os.path.join(self.data_dir, dataset_type)
+
+    # json files
+    rel_filename = os.path.join(dataset_dir, rel_filename)
+    parse_filename = os.path.join(dataset_dir, parse_filename)
+
+    pdtb = codecs.open(rel_filename, encoding='utf-8')
+    parse = json.load(codecs.open(parse_filename, encoding='utf8'))
+
+    # TODO: is `exid` this really necessary?
+    #  Originally for BERTEmbedding lookup indexing
+    exid = 0
+    examples = []
+    for i, pdtb_line in enumerate(pdtb):
+      rel = json.loads(pdtb_line)
+
+      # relation identifier
+      doc_id = rel[const.DOC_ID]
+      unique_id = rel[const.REL_ID]
+      guid = f"{dataset_type}-{doc_id}-{unique_id}"
+
+      rel_type = rel[const.TYPE].lower()
+      if self.sense_type != "all" and rel_type != self.sense_type:
+        continue
+
+      tok_data = [None, None, None]
+      for i, token_type in enumerate([const.ARG1, const.ARG2, const.CONN]):
+        # if char_span_list is empty for that token_type, no tokens exist
+        if rel[token_type][const.CHAR_SPAN_LIST]:
+          token_list = rel[token_type][const.TOKEN_LIST]
+
+          tokens = []
+          for token in token_list:
+            sent = parse[doc_id][const.SENTENCES][token[const.SENT_ID]]
+            gold_token = sent[const.WORDS][token[const.TOK_ID]][0]
+
+            if self.do_lower_case:
+              gold_token = gold_token.lower()
+
+            tokens.append(gold_token)
+
+          # truncation
+          # NOTE: Even if we use BERT, BERT's WordPiece tokenizer will ALWAYS
+          # either (1) produce a same number of tokens as original gold tokens,
+          # or (2) produce a larger number of tokens due to sub-word tokens, so
+          # we are fine enforcing max_length here.
+          if self.truncation_mode == 'normal':
+            tok_data[i] = tokens[:self.max_arg_length]
+          else:
+            # TODO: other modes of truncation
+            #  most notably, REVERSE
+            raise NotImplementedError()
+
+      arg1, arg2, conn = tok_data
+
+      sense_list = rel[const.SENSE]
+      for i,sense in enumerate(sense_list):
+        sense_list[i] = to_level(sense, level=self.sense_level)
+
+      if self.multiple_senses_action == "pick_first":
+        sense = sense_list[0]
+
+        if rel_type == self.sense_type or self.sense_type == 'all':
+          input_example = PDTBRelation(
+            guid=guid, exid=exid, arg1=arg1, arg2=arg2, conn=conn, label=sense,
+            label_list=sense_list)
+          examples.append(input_example)
+          exid += 1
+
+      elif self.multiple_senses_action == "duplicate":
+        for sense in sense_list:
+          if rel_type == self.sense_type or self.sense_type == 'all':
+            input_example = PDTBRelation(
+              guid=guid, exid=exid, arg1=arg1, arg2=arg2, conn=conn,
+              label=sense, label_list=sense_list)
+            examples.append(input_example)
+            exid += 1
+
+      else: # smart picking by majority (?)
+        raise NotImplementedError()
+
+    return examples
+
+def to_level(sense, level=2):
+  s_split = sense.split(".")
+  s_join = ".".join(s_split[:level])
+  return s_join
+
+def get_level(sense):
+  s_split = sense.split(".")
+  return len(s_split)

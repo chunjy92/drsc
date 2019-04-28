@@ -4,7 +4,9 @@ import time
 
 import tensorflow as tf
 
-import utils
+from experiment import Experiment
+from hparams import HParams
+from utils import config, logging
 
 __author__ = 'Jayeol Chun'
 
@@ -17,11 +19,17 @@ def main(_):
   tf.gfile.MakeDirs(FLAGS.model_dir)
 
   # redirects tf logs to file
-  utils.init_logger(FLAGS.model_dir)
-  utils.display_args(FLAGS)
+  logging.init_logger(FLAGS.model_dir)
+  config.display_args(FLAGS)
+
+  # make hparams
+  hp = HParams(FLAGS)
+
+  E = Experiment(hp)
+  E.run()
 
   tf.logging.info("Execution Time: {:.2f}s".format(time.time() - begin))
 
 if __name__ == '__main__':
-  FLAGS = utils.parse_args()
+  FLAGS = config.parse_args()
   tf.app.run()
