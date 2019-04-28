@@ -82,11 +82,26 @@ class Embedding(object):
         embedding = []
         for line in tqdm(txt_file.readlines()):
           line = line.decode('utf-8').strip().split()
+
+          word_list = line[:-self.word_vector_width]
+          if len(word_list) > 1:
+            # for some reason multiple string tokens may exist in a single data
+            # instance. For example, [. . . ...] or [at name@domain ...]. We
+            # skip these
+            continue
+
+          # word = "".join(line[:-self.word_vector_width])
           word = line[0]
-          ndarray = np.asarray(line[1:], dtype=np.float32)
+
+          # # only collect words that are in the PDTB dataset
+          # if word not in self.vocab:
+          #   # bottleneck
+          #   continue
+
+          value = np.asarray(line[-self.word_vector_width:], dtype=np.float32)
 
           vocab.append(word)
-          embedding.append(ndarray)
+          embedding.append(value)
 
         # unk token taken as average of all other vectors
         vocab.insert(0, const.UNK)
@@ -166,6 +181,7 @@ class Embedding(object):
       one_hot_label = np.zeros(len(label_mapping))
       one_hot_label[label_idx] = 1
       data.append(one_hot_label)
+      # tf.logging.info(f"Label info: {example.label} {label_idx} {one_hot_label}")
       # feature = InputFeatures(arg1=data[0], arg2=data[1], conn=data[2],
       #                         label=one_hot_label)
       return data

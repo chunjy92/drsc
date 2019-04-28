@@ -22,7 +22,7 @@ class MLP(object):
                do_finetune_embedding=False):
     # model architecture will slightly vary depending on combinations of:
     # [dataset_type, pooling_action, conn_action]
-    self.dataset_type = sense_type # see const.DATASET_TYPES
+    self.sense_type = sense_type # see const.DATASET_TYPES
     self.pooling_action = pooling_action # see const.POOLING_ACTIONS
     # pooling_action_split = pooling_action.split("_")
     # self.pooling_action = pooling_action_split[0] # sum, mean, concat, ..
@@ -57,22 +57,20 @@ class MLP(object):
 
     for i in range(num_layers):
       with tf.variable_scope(f"layer_{i}"):
-        layer_input = output
 
-        if i == num_layers-1:
-          hidden_size = self.num_labels
-          activation = None
-        else:
-          hidden_size = self.hidden_size
-          activation = tf.nn.relu
+        # if i == num_layers-1:
+        #   hidden_size = self.num_labels
+        #         #   activation = None
+        # else:
+        #   hidden_size = self.hidden_size
+        #   activation = tf.nn.tanh
 
-        tf.logging.info(f"Hidden Size: {hidden_size}")
         output = tf.layers.dense(
           name="dense",
-          inputs=layer_input,
-          units=hidden_size,
+          inputs=output,
+          units=self.hidden_size,
           kernel_initializer=tf.truncated_normal_initializer(stddev=0.02),
-          activation=activation
+          activation=tf.nn.tanh
         )
 
     return output
@@ -96,27 +94,27 @@ class MLP(object):
       target_hidden_size if target_hidden_size else self.hidden_size
 
     weight_1 = tf.get_variable(
-      f"linear_combine_weight_{1}", [target_hidden_size, hidden_size],
+      f"combine_weight_{1}", [target_hidden_size, hidden_size],
       initializer=tf.truncated_normal_initializer(stddev=0.02)
     )
 
     weight_2 = tf.get_variable(
-      f"linear_combine_weight_{2}", [target_hidden_size, hidden_size],
+      f"combine_weight_{2}", [target_hidden_size, hidden_size],
       initializer=tf.truncated_normal_initializer(stddev=0.02)
     )
 
     input_1_matmul = tf.matmul(input_1, weight_1, transpose_b=True)
     input_2_matmul = tf.matmul(input_2, weight_2, transpose_b=True)
-    matmul = tf.add(input_1_matmul, input_2_matmul)
+    logits = tf.add(input_1_matmul, input_2_matmul)
 
     if add_bias:
       bias = tf.get_variable(
         f"combine_bias", [target_hidden_size],
         initializer=tf.zeros_initializer()
       )
-      return tf.nn.bias_add(matmul, bias)
+      logits = tf.nn.bias_add(logits, bias)
 
-    return matmul
+    return tf.nn.tanh(logits, name="combine_tanh")
 
   def build(self):
     with tf.variable_scope("mlp"):
@@ -130,55 +128,94 @@ class MLP(object):
       self.conn = tf.placeholder(tf.int32, [None, self.max_arg_length],
                                  name="conn")
 
-      with tf.variable_scope("embedding"):
-        self.embedding_placeholder = \
-          tf.placeholder(tf.float32, self.embedding_shape,
-                         "embedding_placeholder")
-        self.embedding_table = self.init_embedding(self.embedding_placeholder)
+      self.embedding_placeholder = \
+        tf.placeholder(tf.float32, self.embedding_shape,
+                       "embedding_placeholder")
+
+      self.embedding_table = self.init_embedding(self.embedding_placeholder)
 
       # embedding lookup
       with tf.variable_scope("embedding"):
         arg1_embedding = tf.nn.embedding_lookup(self.embedding_table, self.arg1)
         arg2_embedding = tf.nn.embedding_lookup(self.embedding_table, self.arg2)
+
+        tf.logging.info(f"ARg1 Embed Shape: {arg1_embedding.shape}")
         # conn_embedding = tf.nn.embedding_lookup(self.embedding_table, self.conn)
 
-      if self.dataset_type == "implicit":
+      if self.sense_type == "implicit":
         if self.do_pooling_first:
           with tf.variable_scope("pooling"):
             arg1_pooled = apply_pooling_fn(arg1_embedding,
                                            pooling_action=self.pooling_action)
             arg2_pooled = apply_pooling_fn(arg2_embedding,
                                            pooling_action=self.pooling_action)
-            combined = self.linearly_combine_tensors(arg1_pooled, arg2_pooled,
-                                                     add_bias=True)
+
+            tf.logging.info(f"ARg1 Pooled Shape: {arg1_pooled.shape}")
+
+          combined = self.linearly_combine_tensors(arg1_pooled, arg2_pooled,
+                                                   add_bias=True)
+
+          tf.logging.info(f"Combined Shape: {combined.shape}")
 
           output = self.build_dense_layers_single_input(combined)
 
+          tf.logging.info(f"Dense Output Shape: {output.shape}")
+
         else:
-          raise NotImplementedError()
+          raise NotImplementedError(
+            "Pooling is always applied first on word vectors")
       else:
+        # TODO: for other sense types
         raise NotImplementedError()
 
+
+    hidden_size = output.shape[-1].value
+
+    output_weights = tf.get_variable(
+      "output_weights", [self.num_labels, hidden_size],
+      initializer=tf.truncated_normal_initializer(stddev=0.02))
+
+    output_bias = tf.get_variable(
+      "output_bias", [self.num_labels], initializer=tf.zeros_initializer())
+
     with tf.variable_scope("loss"):
-      logits = output
-
-      tf.logging.info(f"Logits Shape: {logits.shape}")
-
-      self.preds = tf.argmax(logits, axis=1)
-      golds = tf.argmax(self.label, axis=1)
+      logits = tf.matmul(output, output_weights, transpose_b=True)
+      logits = tf.nn.bias_add(logits, output_bias)
+      self.preds = tf.argmax(logits, axis=-1)
+      golds = tf.argmax(self.label, axis=-1)
       self.acc = tf.reduce_mean(tf.cast(tf.equal(self.preds, golds), "float"),
-                                name="accuracy")
+                                                            name="accuracy")
 
-      self.probabilities = tf.nn.softmax(logits, axis=-1)
       self.per_example_loss = tf.nn.softmax_cross_entropy_with_logits_v2(
         labels=self.label,
         logits=logits
       )
       self.loss = tf.reduce_mean(self.per_example_loss)
 
+      # probabilities = tf.nn.softmax(logits, axis=-1)
+      # log_probs = tf.nn.log_softmax(logits, axis=-1)
+      #
+      # per_example_loss = -tf.reduce_sum(tf.cast(self.label, tf.float32) * log_probs, axis=-1)
+      # self.loss = tf.reduce_mean(per_example_loss)
+
+    # with tf.variable_scope("loss"):
+    #   logits = output
+    #
+    #   tf.logging.info(f"Logits Shape: {logits.shape}")
+    #
+    #   self.preds = tf.argmax(logits, axis=1)
+    #   golds = tf.argmax(self.label, axis=1)
+    #   self.acc = tf.reduce_mean(tf.cast(tf.equal(self.preds, golds), "float"),
+    #                             name="accuracy")
+    #
+    #   self.probabilities = tf.nn.softmax(logits, axis=-1)
+    #
+    #   log_probs = tf.nn.log_softmax(logits, axis=-1)
+    #   per_example_loss = -tf.reduce_sum(tf.cast(self.label, tf.float32) * log_probs, axis=-1)
+    #   self.loss = tf.reduce_mean(per_example_loss)
+
     optimizer = get_optimizer(self.optimizer)
     self.train_op = optimizer(self.learning_rate).minimize(self.loss)
-
 
 def apply_join_fn(input_tensor, second_tensor, join_action=None):
   if join_action == "sum":
@@ -211,6 +248,8 @@ def apply_join_fn(input_tensor, second_tensor, join_action=None):
 
 
 def apply_pooling_fn(input_tensor, second_tensor=None, pooling_action=None):
+  # tensor shape: [batch, arg_length, word_vector_width]
+  tf.logging.info(input_tensor.shape)
   if pooling_action == "sum":
     if second_tensor:
       return tf.add(input_tensor, second_tensor)
@@ -244,5 +283,7 @@ def get_optimizer(optimizer):
     return tf.train.AdamOptimizer
   elif optimizer == "sgd":
     return tf.train.GradientDescentOptimizer
+  elif optimizer == 'adagrad':
+    return tf.train.AdagradOptimizer
   else:
     raise NotImplementedError()

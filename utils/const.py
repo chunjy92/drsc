@@ -33,7 +33,7 @@ EMBEDDINGS = ['bert',
 TRUNC_MODES = ['normal', 'reverse']
 POOLING_ACTIONS = ['sum', 'mean', 'max', 'concat', 'matmul'] # concat?
 CONN_ACTIONS = []
-OPTIMIZERS = ['sgd', 'adam']
+OPTIMIZERS = ['sgd', 'adam', 'adagrad']
 SENSE_TYPES = ['all', 'implicit', 'non-explicit', 'explicit']
 MULTIPLE_SENSES_ACTIONS = ['pick_first', 'duplicate']
 

@@ -53,7 +53,7 @@ parser.add_argument(
 
 # model architecture config
 parser.add_argument(
-  "--hidden_size", type=int, default=100, help="hidden size of model layers")
+  "--hidden_size", type=int, default=50, help="hidden size of model layers")
 parser.add_argument(
   "--num_hidden_layers", type=int, default=2,
   help="number of model's hidden layers")
@@ -70,7 +70,7 @@ parser.add_argument(
   "--max_arg_length", type=int, default=128,
   help="how many tokens for each of arg to keep")
 parser.add_argument(
-  "--learning_rate", type=float, default=0.0001,
+  "--learning_rate", type=float, default=3e-4,
   help="learning rate during training")
 parser.add_argument(
   "--optimizer", type=str.lower, default="adam", choices=const.OPTIMIZERS,

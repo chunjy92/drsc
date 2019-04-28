@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import os
 import random
+from collections import Counter
 
 import tensorflow as tf
 
@@ -63,11 +64,10 @@ class Experiment(object):
       #   pickle.dump(embedding_outputs, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     else:
-      if self.hp.embedding == 'googlenews':
-        # reduce number of vocab and corresponding vector entries by collecting
-        # all unique tokens in dev, test and train
-        vocab = self.processor.collect_all_vocab()
-        tf.logging.info(f"All Vocab: {len(vocab)}")
+      # reduce number of vocab and corresponding vector entries by collecting
+      # all unique tokens in dev, test and train
+      vocab = self.processor.collect_all_vocab()
+      tf.logging.info(f"All Vocab: {len(vocab)}")
 
       self.embedding = Embedding(embedding=self.hp.embedding,
                                  vocab=vocab,
@@ -75,8 +75,7 @@ class Experiment(object):
 
       self.embedding_table = self.embedding.get_embedding_table()
       vocab = self.embedding.get_vocab() # currently not used
-
-    tf.logging.info(f"{self.hp.embedding.upper()} embedding init")
+    tf.logging.info("Embedding init")
 
     # init model
     self.build_model()
@@ -131,7 +130,8 @@ class Experiment(object):
 
     batches = []
     for start in range(0, len(examples), batch_size):
-      batches.append(examples[start:start+batch_size])
+      batch = examples[start:start+batch_size]
+      batches.append(batch)
 
     return batches
 
@@ -170,15 +170,17 @@ class Experiment(object):
         batch = self.embedding.convert_to_ids(batch, self.label_mapping)
 
         arg1, arg2, conn, label = batch
-        _, loss, acc = self.sess.run(
-          [self.model.train_op, self.model.loss, self.model.acc],
+        _, preds, loss, acc = self.sess.run(
+          [self.model.train_op, self.model.preds, self.model.loss, self.model.acc],
           feed_dict={self.model.arg1: arg1, self.model.arg2: arg2,
                      self.model.conn: conn, self.model.label: label})
-
+        c = Counter(preds)
+        for key in c.keys():
+          tf.logging.info(self.labels[key])
         processed_batches += 1
         tf.logging.info(
-          "[Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
-            iter, processed_batches, num_batches, loss, acc))
+          "[Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f} Counter {}".format(
+            iter, processed_batches, num_batches, loss, acc, c))
 
         if (i+1) % self.hp.eval_every == 0:
           self.eval()
@@ -188,12 +190,13 @@ class Experiment(object):
     examples = self.embedding.convert_to_ids(examples, self.label_mapping)
     arg1, arg2, conn, label = examples
 
-    loss, acc = self.sess.run(
-      [self.model.loss, self.model.acc],
+    loss, preds, acc = self.sess.run(
+      [self.model.loss, self.model.preds, self.model.acc],
       feed_dict={self.model.arg1: arg1, self.model.arg2: arg2,
                  self.model.conn: conn, self.model.label: label})
 
-    tf.logging.info("[EVAL] loss: {:.3f} acc: {:.3f}".format(loss, acc))
+    c = Counter(preds)
+    tf.logging.info("[EVAL] loss: {:.3f} acc: {:.3f} {}".format(loss, acc, c))
 
 
   def predict(self):
@@ -208,7 +211,9 @@ class Experiment(object):
       feed_dict={self.model.arg1 : arg1, self.model.arg2 : arg2,
                  self.model.conn : conn, self.model.label: label})
 
-    tf.logging.info("[PREDICT] acc: {:.3f}".format(acc))
+    c = Counter(preds)
+    tf.logging.info("[PREDICT] acc: {:.3f} {}".format(acc, c))
+
 
     # convert label_id preds to labels
     inverse_label_mapping = {v:k for k,v in self.label_mapping.items()}
@@ -219,3 +224,4 @@ class Experiment(object):
     tf.logging.info(f"Exporting predictions at {preds_file}")
     with open(preds_file, 'w') as f:
       f.write("\n".join(preds_str))
+
