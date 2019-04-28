@@ -6,7 +6,7 @@ __author__ = 'Jayeol Chun'
 
 
 # resource paths
-HOME = os.path.expanduser("~") # /home/b/jchun
+HOME = os.path.expanduser("~") # [lycastus] /home/b/jchun
 RESOURCES = os.path.join(HOME, "Documents/Resources")
 BERT = os.path.join(RESOURCES, "bert_models")
 W2V = os.path.join(RESOURCES, "w2v")
@@ -18,7 +18,13 @@ CONLL = os.path.join(PDTB, "conll")
 
 # config choices
 MODELS = ['mlp']
-EMBEDDINGS = []
+EMBEDDINGS = ['bert',
+              'glove.6B.50d',
+              'glove.6B.100d',
+              'glove.6B.200d',
+              'glove.6B.300d',
+              'glove.840B.300d',
+              'googlenews']
 
 # special tokens
 PAD = '_PAD_'

@@ -13,10 +13,10 @@ __author__ = 'Jayeol Chun'
 
 
 class PDTBProcessor(object):
-  """PDTB Data Loader
+  """PDTB Data Processor
 
-  Wraps each relation as `DiscourseRelation` object, defined in
-  `data/DiscourseRelations.py`
+  Wraps each relation as `PDTBRelation` object, defined in
+  `data/PDTBRelation.py`
 
   """
   def __init__(self,
@@ -24,7 +24,7 @@ class PDTBProcessor(object):
                max_arg_length=128,
                truncation_mode='normal',
                do_lower_case=False,
-               sense_type="all",
+               sense_type='implicit',
                sense_level=2,
                multiple_senses_action="pick_first"):
     # root data dir
@@ -44,6 +44,9 @@ class PDTBProcessor(object):
     self._vocab = None
     self._labels = None
 
+    # cached data
+    self._cached = {}
+
   @property
   def vocab(self):
     return self._vocab
@@ -59,7 +62,7 @@ class PDTBProcessor(object):
 
     tf.logging.info("Compiling labels from training set")
     if not train_instances:
-      train_instances = self.get_train_examples()
+      self._cached['train'] = train_instances = self.get_train_examples()
 
     labels = set()
     for instance in train_instances:
@@ -69,12 +72,13 @@ class PDTBProcessor(object):
 
   def compile_vocab_labels(self, train_instances=None):
     """Collects unique vocab and label set from training instances"""
-    if self.vocab is not None and self.labels is not None:
+    if self.vocab is not None:
+      self.compile_labels()
       return
 
     tf.logging.info("Compiling vocab and labels from training set")
     if not train_instances:
-      train_instances = self.get_train_examples()
+      self._cached['train'] = train_instances = self.get_train_examples()
 
     vocab, labels = set(), set()
     for instance in train_instances:
@@ -124,6 +128,12 @@ class PDTBProcessor(object):
     Returns:
       list of InputExamples
     """
+    # check if cached
+    if dataset_type in self._cached:
+      res = self._cached[dataset_type]
+      tf.logging.info(f"Loading {len(res)} cached {dataset_type} instances")
+      return res
+
     dataset_dir = os.path.join(self.data_dir, dataset_type)
 
     # json files
@@ -171,11 +181,17 @@ class PDTBProcessor(object):
           # or (2) produce a larger number of tokens due to sub-word tokens, so
           # we are fine enforcing max_length here.
           if self.truncation_mode == 'normal':
-            tok_data[i] = tokens[:self.max_arg_length]
+            tokens = tokens[:self.max_arg_length]
           else:
             # TODO: other modes of truncation
             #  most notably, REVERSE
             raise NotImplementedError()
+
+          # if less than max_arg_length, pad up with _PAD_
+          num_pad = self.max_arg_length - len(tokens)
+          tokens += [const.PAD] * num_pad
+
+          tok_data[i] = tokens
 
       arg1, arg2, conn = tok_data
 
@@ -204,6 +220,10 @@ class PDTBProcessor(object):
 
       else: # smart picking by majority (?)
         raise NotImplementedError()
+
+    # cache
+    if dataset_type not in self._cached:
+      self._cached[dataset_type] = examples
 
     return examples
 
