@@ -59,33 +59,45 @@ class PDTBProcessor(object):
     if key in self._cached:
       self._cached.pop(key)
 
-  def compile_labels(self, train_instances=None):
-    """Collects unique label set from training instances"""
-    if self.labels is not None:
-      return
+  def collect_all_vocab(self):
+    vocab = self.vocab
+    if not vocab:
+      self.compile_vocab_labels()
+      vocab = self.vocab
 
-    tf.logging.info("Compiling labels from training set")
-    if not train_instances:
-      self._cached['train'] = train_instances = self.get_train_examples()
+    vocab = set(vocab)
+
+    dev_examples = self.get_dev_examples()
+    test_examples = self.get_test_examples()
+
+    for dataset_examples in [dev_examples, test_examples]:
+      for example in dataset_examples:
+        vocab.update(example.arg1)
+        vocab.update(example.arg2)
+        if example.conn:
+          vocab.update(example.conn)
+    return list(vocab)
+
+  def compile_labels(self, instances=None):
+    """Collects unique label set from training instances"""
+    if not instances:
+      tf.logging.info("Compiling labels from training set")
+      self._cached['train'] = instances = self.get_train_examples()
 
     labels = set()
-    for instance in train_instances:
+    for instance in instances:
       labels.add(instance.label)
 
     self._labels = sorted(labels)
 
-  def compile_vocab_labels(self, train_instances=None):
+  def compile_vocab_labels(self, instances=None):
     """Collects unique vocab and label set from training instances"""
-    if self.vocab is not None:
-      self.compile_labels()
-      return
-
-    tf.logging.info("Compiling vocab and labels from training set")
-    if not train_instances:
-      self._cached['train'] = train_instances = self.get_train_examples()
+    if not instances:
+      tf.logging.info("Compiling vocab and labels from training set")
+      self._cached['train'] = instances = self.get_train_examples()
 
     vocab, labels = set(), set()
-    for instance in train_instances:
+    for instance in instances:
       vocab.update(instance.arg1)
       vocab.update(instance.arg2)
       if instance.conn: # connective may not exist
@@ -186,6 +198,8 @@ class PDTBProcessor(object):
           # we are fine enforcing max_length here.
           if self.truncation_mode == 'normal':
             tokens = tokens[:self.max_arg_length]
+          elif self.truncation_mode == 'reverse':
+            tokens = tokens[::-1][:self.max_arg_length]
           else:
             # TODO: other modes of truncation
             #  most notably, REVERSE

@@ -1,7 +1,6 @@
 #! /usr/bin/python3
 # -*- coding: utf-8 -*-
 import tensorflow as tf
-from tqdm import trange
 
 __author__ = 'Jayeol Chun'
 
@@ -10,29 +9,32 @@ class MLP(object):
   def __init__(self,
                labels=None,
                max_arg_length=128,
-               feature_size=50,
-               hidden_size=100,
+               word_vector_width=50,
+               hidden_size=300,
                num_hidden_layers=2,
                learning_rate=0.0001,
                optimizer='adam',
-               dataset_type='implicit',
-               pooling_action='sum_first',
+               sense_type='implicit',
+               pooling_action='sum',
                conn_action=None,
                embedding_shape=None,
-               finetune_embedding=False):
+               do_pooling_first=False,
+               do_finetune_embedding=False):
     # model architecture will slightly vary depending on combinations of:
     # [dataset_type, pooling_action, conn_action]
-    self.dataset_type = dataset_type # see const.DATASET_TYPES
+    self.dataset_type = sense_type # see const.DATASET_TYPES
     self.pooling_action = pooling_action # see const.POOLING_ACTIONS
-    pooling_action_split = pooling_action.split("_")
-    self.pooling_action = pooling_action_split[0] # sum, mean, concat, ..
-    self.pooling_timing = pooling_action_split[1] # first or later
+    # pooling_action_split = pooling_action.split("_")
+    # self.pooling_action = pooling_action_split[0] # sum, mean, concat, ..
+    # self.pooling_timing = pooling_action_split[1] # first or later
+    self.pooling_action = pooling_action
+    self.do_pooling_first = do_pooling_first
 
     self.conn_action = conn_action # see const.CONN_ACTIONS
 
     # experimental settings
     self.max_arg_length = max_arg_length
-    self.feature_size = feature_size
+    self.word_vector_width = word_vector_width
     self.hidden_size = hidden_size
     self.num_hidden_layers = num_hidden_layers
     self.learning_rate = learning_rate
@@ -44,7 +46,7 @@ class MLP(object):
 
     # embedding related
     self.embedding_shape = embedding_shape
-    self.finetune_embedding = finetune_embedding
+    self.do_finetune_embedding = do_finetune_embedding
 
     self.build()
 
@@ -79,37 +81,42 @@ class MLP(object):
     embedding_table = tf.get_variable(
       name="embedding",
       shape=self.embedding_shape,
-      trainable=self.finetune_embedding
+      trainable=self.do_finetune_embedding
     )
+
     self.embedding_init_op = embedding_table.assign(placeholder)
 
     return embedding_table
 
 
-  def combine_tensors(self, input_1, input_2, target_hidden_size=None):
+  def linearly_combine_tensors(self, input_1, input_2, target_hidden_size=None,
+                               add_bias=False):
     hidden_size = input_1.shape[-1].value
     target_hidden_size = \
       target_hidden_size if target_hidden_size else self.hidden_size
 
     weight_1 = tf.get_variable(
-      f"combine_weight_{1}", [target_hidden_size, hidden_size],
+      f"linear_combine_weight_{1}", [target_hidden_size, hidden_size],
       initializer=tf.truncated_normal_initializer(stddev=0.02)
     )
 
     weight_2 = tf.get_variable(
-      f"combine_weight_{2}", [target_hidden_size, hidden_size],
+      f"linear_combine_weight_{2}", [target_hidden_size, hidden_size],
       initializer=tf.truncated_normal_initializer(stddev=0.02)
     )
 
     input_1_matmul = tf.matmul(input_1, weight_1, transpose_b=True)
     input_2_matmul = tf.matmul(input_2, weight_2, transpose_b=True)
-    input_matmul = tf.add(input_1_matmul, input_2_matmul)
+    matmul = tf.add(input_1_matmul, input_2_matmul)
 
-    bias = tf.get_variable(
-      f"combine_bias", [target_hidden_size], initializer=tf.zeros_initializer()
-    )
+    if add_bias:
+      bias = tf.get_variable(
+        f"combine_bias", [target_hidden_size],
+        initializer=tf.zeros_initializer()
+      )
+      return tf.nn.bias_add(matmul, bias)
 
-    return tf.nn.bias_add(input_matmul, bias)
+    return matmul
 
   def build(self):
     with tf.variable_scope("mlp"):
@@ -131,25 +138,26 @@ class MLP(object):
 
       # embedding lookup
       with tf.variable_scope("embedding"):
-        # arg1_embedding = self.embedding_lookup(self.arg1)
-        arg1_embedding = tf.nn.embedding_lookup(
-          self.embedding_table, self.arg1)
-        # arg2_embedding = self.embedding_lookup(self.arg2)
-        arg2_embedding = tf.nn.embedding_lookup(
-          self.embedding_table, self.arg2)
+        arg1_embedding = tf.nn.embedding_lookup(self.embedding_table, self.arg1)
+        arg2_embedding = tf.nn.embedding_lookup(self.embedding_table, self.arg2)
+        # conn_embedding = tf.nn.embedding_lookup(self.embedding_table, self.conn)
 
       if self.dataset_type == "implicit":
-        if self.pooling_timing == "first":
+        if self.do_pooling_first:
           with tf.variable_scope("pooling"):
-            pooling_fn = get_pooling_fn(self.pooling_action)
-            arg1_pooled = pooling_fn(arg1_embedding, axis=1)
-            arg2_pooled = pooling_fn(arg2_embedding, axis=1)
-            combined = self.combine_tensors(arg1_pooled, arg2_pooled)
+            arg1_pooled = apply_pooling_fn(arg1_embedding,
+                                           pooling_action=self.pooling_action)
+            arg2_pooled = apply_pooling_fn(arg2_embedding,
+                                           pooling_action=self.pooling_action)
+            combined = self.linearly_combine_tensors(arg1_pooled, arg2_pooled,
+                                                     add_bias=True)
 
           output = self.build_dense_layers_single_input(combined)
 
+        else:
+          raise NotImplementedError()
       else:
-        pass
+        raise NotImplementedError()
 
     with tf.variable_scope("loss"):
       logits = output
@@ -171,25 +179,65 @@ class MLP(object):
     optimizer = get_optimizer(self.optimizer)
     self.train_op = optimizer(self.learning_rate).minimize(self.loss)
 
-  # def train(self, sess, examples):
-  #
-  #
-  #
-  #     _, loss = self.sess.run([self.train_op, self.loss],
-  #                             feed_dict={self.x: train_x, self.y: train_y})
 
+def apply_join_fn(input_tensor, second_tensor, join_action=None):
+  if join_action == "sum":
+    if second_tensor:
+      return tf.add(input_tensor, second_tensor)
+    return tf.reduce_sum(input_tensor, axis=1)
+  elif join_action == "mean":
+    if second_tensor:
+      return tf.reduce_mean([input_tensor, second_tensor], axis=0)
+    return tf.reduce_mean(input_tensor, axis=1)
+  elif join_action == "max":
+    if second_tensor:
+      return tf.reduce_max([input_tensor, second_tensor], axis=0)
+    return tf.reduce_max(input_tensor, axis=1)
+  elif join_action in ["concat", 'matmul']:
+    # usually works on model outputs for each arg1 and arg2
+    if not second_tensor:
+      raise ValueError("Second tensor passed as `None` value")
+    input_tensor_shape = input_tensor.shape
+    second_tensor_shape = second_tensor.shape
+    assert_op = tf.assert_equal(input_tensor_shape, second_tensor_shape)
+    with tf.control_dependencies([assert_op]):
+      if join_action == 'concat':
+        return tf.concat([input_tensor, second_tensor], axis=-1)
+      else:
+        return tf.multiply(input_tensor, second_tensor)
 
-def get_pooling_fn(pooling):
-  if pooling == "sum":
-    return tf.reduce_sum
-  elif pooling=="mean":
-    return tf.reduce_mean
-  elif pooling == "max":
-    return tf.reduce_max
-  # elif .pooling == "matmul":
-  #   return tf.matmul
   else:
-    raise ValueError("pooling function not understood")
+    raise ValueError(f"{join_action} pooling function not understood")
+
+
+def apply_pooling_fn(input_tensor, second_tensor=None, pooling_action=None):
+  if pooling_action == "sum":
+    if second_tensor:
+      return tf.add(input_tensor, second_tensor)
+    return tf.reduce_sum(input_tensor, axis=1)
+  elif pooling_action== "mean":
+    if second_tensor:
+      return tf.reduce_mean([input_tensor, second_tensor], axis=0)
+    return tf.reduce_mean(input_tensor, axis=1)
+  elif pooling_action == "max":
+    if second_tensor:
+      return tf.reduce_max([input_tensor, second_tensor], axis=0)
+    return tf.reduce_max(input_tensor, axis=1)
+  elif pooling_action in ["concat", 'matmul']:
+    # usually works on model outputs for each arg1 and arg2
+    if not second_tensor:
+      raise ValueError("Second tensor passed as `None` value")
+    input_tensor_shape = input_tensor.shape
+    second_tensor_shape = second_tensor.shape
+    assert_op = tf.assert_equal(input_tensor_shape, second_tensor_shape)
+    with tf.control_dependencies([assert_op]):
+      if pooling_action == 'concat':
+        return tf.concat([input_tensor, second_tensor], axis=-1)
+      else:
+        return tf.multiply(input_tensor, second_tensor)
+
+  else:
+    raise ValueError(f"{pooling_action} pooling function not understood")
 
 def get_optimizer(optimizer):
   if optimizer=="adam":

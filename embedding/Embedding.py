@@ -1,11 +1,11 @@
 #! /usr/bin/python3
 # -*- coding: utf-8 -*-
-import tarfile
-import zipfile
+import os
 
 import numpy as np
+import tensorflow as tf
+from tqdm import tqdm
 
-from data import InputFeatures
 from utils import const
 
 __author__ = 'Jayeol Chun'
@@ -23,7 +23,7 @@ class Embedding(object):
   def __init__(self,
                embedding=None,
                vocab=None,
-               feature_size=50,
+               word_vector_width=200,
                max_arg_length=128):
     self.embedding = embedding
     self.vocab = vocab
@@ -35,13 +35,13 @@ class Embedding(object):
 
     # width of word vector: this will be overwritten if loading from source
     if not self.embedding:
-      self.feature_size = feature_size
+      self.word_vector_width = word_vector_width
     else:
       if self.embedding == "googlenews":
-        self.feature_size = 300
+        self.word_vector_width = 300
       else:
         last_split = self.embedding.split(".")[-1]
-        self.feature_size = int(last_split[:-1])
+        self.word_vector_width = int(last_split[:-1])
 
     self.max_arg_length = max_arg_length
 
@@ -59,18 +59,83 @@ class Embedding(object):
 
       vocab_size = len(self.vocab)
 
-      embedding = np.random.standard_normal([vocab_size, self.feature_size])
+      embedding = \
+        np.random.standard_normal([vocab_size, self.word_vector_width])
       embedding[0] = 0 # 0 for padding
     else:
       if self.embedding.startswith("glove"):
-        pass
-      else:
-        pass
+        import zipfile
 
-    self._embedding_table = embedding
+        if '6B' in self.embedding:
+          glove_zip = os.path.join(const.W2V, "glove.6B.zip")
+          glove_txt = f"glove.6B.{self.word_vector_width}d.txt"
+        else:
+          glove_zip = os.path.join(const.W2V, self.embedding + ".zip")
+          glove_txt = self.embedding + ".txt"
+
+        archive = zipfile.ZipFile(glove_zip, 'r')
+        txt_file = archive.open(glove_txt)
+
+        tf.logging.info(f"Loading {glove_txt}")
+
+        vocab = []
+        embedding = []
+        for line in tqdm(txt_file.readlines()):
+          line = line.decode('utf-8').strip().split()
+          word = line[0]
+          ndarray = np.asarray(line[1:], dtype=np.float32)
+
+          vocab.append(word)
+          embedding.append(ndarray)
+
+        # unk token taken as average of all other vectors
+        vocab.insert(0, const.UNK)
+        embedding.insert(0, np.mean(embedding, axis=0))
+
+        # all 0 for padding
+        vocab.insert(0, const.PAD)
+        embedding.insert(0, np.zeros(self.word_vector_width, dtype=np.float))
+
+        self.vocab = vocab
+
+      else:
+        assert self.vocab is not None, "requires a reduced number of vocabs"
+
+        import gensim
+
+        googlenews_gz = os.path.join(
+          const.W2V, "GoogleNews-vectors-negative300.bin.gz")
+
+        tf.logging.info("Loading GoogleNews w2v. This will take some time.")
+        model = gensim.models.KeyedVectors.load_word2vec_format(
+          googlenews_gz, binary=True)
+        tf.logging.info("done.")
+
+        # self.vocab: sorted list of vocab
+        vocab = []
+        embedding = []
+        for v in self.vocab:
+          if v in model:
+            embedding.append(model.get_vector(v))
+            vocab.append(v)
+
+        # unk token taken as average of all other vectors
+        vocab.insert(0, const.UNK)
+        embedding.insert(0, np.mean(embedding, axis=0))
+
+        # all 0 for padding
+        vocab.insert(0, const.PAD)
+        embedding.insert(0, np.zeros(self.word_vector_width, dtype=np.float))
+
+      self.vocab = vocab
+
+    self._embedding_table = np.array(embedding, np.float)
 
   def get_embedding_table(self):
     return self.embedding_table
+
+  def get_vocab(self):
+    return self.vocab
 
   def convert_to_ids(self, examples, label_mapping):
     """

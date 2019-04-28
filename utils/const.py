@@ -19,12 +19,19 @@ CONLL = os.path.join(PDTB, "conll")
 # config choices
 MODELS = ['mlp']
 EMBEDDINGS = ['bert',
-              'glove.6B.50d',
-              'glove.6B.100d',
-              'glove.6B.200d',
-              'glove.6B.300d',
-              'glove.840B.300d',
+              'glove.6B.50d', # uncased
+              'glove.6B.100d', # uncased
+              'glove.6B.200d', # uncased
+              'glove.6B.300d', # uncased
+              'glove.42B.300d', # uncased
+              'glove.840B.300d', # cased
               'googlenews']
+TRUNC_MODES = ['normal', 'reverse']
+POOLING_ACTIONS = ['sum', 'mean', 'max', 'concat', 'matmul'] # concat?
+CONN_ACTIONS = []
+OPTIMIZERS = ['sgd', 'adam']
+SENSE_TYPES = ['all', 'implicit', 'non-explicit', 'explicit']
+MULTIPLE_SENSES_ACTIONS = ['pick_first', 'duplicate']
 
 # special tokens
 PAD = '_PAD_'

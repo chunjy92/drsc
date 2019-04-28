@@ -1,5 +1,6 @@
 #! /usr/bin/python3
 # -*- coding: utf-8 -*-
+import os
 import random
 
 import tensorflow as tf
@@ -16,7 +17,14 @@ class Experiment(object):
     self.hp = hp
 
     # init data preprocessor
-    self.processor = PDTBProcessor()
+    self.processor = PDTBProcessor(
+      max_arg_length=self.hp.max_arg_length,
+      truncation_mode=self.hp.truncation_mode,
+      do_lower_case=self.hp.do_lower_case,
+      sense_type=self.hp.sense_type,
+      sense_level=self.hp.sense_level,
+      multiple_senses_action=self.hp.multiple_senses_action
+    )
 
     vocab = None
     if not self.hp.embedding:
@@ -33,22 +41,44 @@ class Experiment(object):
     if self.hp.embedding == 'bert':
       raise NotImplementedError()
     else:
+      if self.hp.embedding == 'googlenews':
+        # reduce number of vocab and corresponding vector entries by collecting
+        # all unique tokens in dev, test and train
+        vocab = self.processor.collect_all_vocab()
+        tf.logging.info(f"All Vocab: {len(vocab)}")
+
       self.embedding = Embedding(embedding=self.hp.embedding,
-                                 vocab=vocab)
+                                 vocab=vocab,
+                                 max_arg_length=self.hp.max_arg_length)
+
       self.embedding_table = self.embedding.get_embedding_table()
+      vocab = self.embedding.get_vocab() # currently not used
 
     # init model
     self.build_model()
 
   def build_model(self):
     if self.hp.model == "mlp":
-      self.model = model.MLP(labels=self.labels,
-                             embedding_shape=self.embedding_table.shape,
-                             finetune_embedding=False)
+      self.model = model.MLP(
+        labels=self.labels,
+        max_arg_length=self.hp.max_arg_length,
+        word_vector_width=self.hp.word_vector_width,
+        hidden_size=self.hp.hidden_size,
+        num_hidden_layers=self.hp.num_hidden_layers,
+        learning_rate=self.hp.learning_rate,
+        optimizer=self.hp.optimizer,
+        sense_type=self.hp.sense_type,
+        pooling_action=self.hp.pooling_action,
+        embedding_shape=self.embedding_table.shape,
+        do_pooling_first=self.hp.do_pooling_first,
+        do_finetune_embedding=self.hp.do_finetune_embedding
+      )
+    else:
+      raise NotImplementedError()
 
     tf.logging.info(f"{self.hp.model.upper()} model init")
 
-  # TODO
+  # TODO (April 27)
   def load(self):
     pass
 
@@ -77,8 +107,8 @@ class Experiment(object):
 
     batches = []
     for start in range(0, len(examples), batch_size):
-      # append the data from start pos of length batch size
       batches.append(examples[start:start+batch_size])
+
     return batches
 
   def train(self):
@@ -87,23 +117,26 @@ class Experiment(object):
 
     init = tf.global_variables_initializer()
 
-    # config = tf.ConfigProto()
-    # config.gpu_options.allow_growth = True
-    # sess handled by Experiment obj, not by each model
-    # self.sess = tf.Session(config=config)
-    self.sess = tf.Session()
-
     tvars = tf.trainable_variables()
     tf.logging.info("***** Trainable Variables *****")
     for var in tvars:
       tf.logging.info("  name = %s, shape = %s", var.name, var.shape)
 
+    config = tf.ConfigProto()
+
+    # uncomment to pre-allocate all available GPU memory
+    config.gpu_options.allow_growth = True
+
+    # sess handled by Experiment obj, not by each model
+    self.sess = tf.Session(config=config)
+
     self.sess.run(
       [init, self.model.embedding_init_op],
       feed_dict={self.model.embedding_placeholder: self.embedding_table})
 
-    for iter in range(1):
-      feat_batches = self.batchify(examples, batch_size=64, do_shuffle=True)
+    for iter in range(self.hp.num_iter):
+      feat_batches = self.batchify(examples, batch_size=self.hp.batch_size,
+                                   do_shuffle=True)
       num_batches = len(feat_batches)
       tf.logging.info(f"Created {num_batches} batches.")
 
@@ -120,10 +153,10 @@ class Experiment(object):
                      self.model.label: label})
         processed_batches += 1
         tf.logging.info(
-          "[{}th epoch {}/{} batches] loss: {:.3f} acc: {:.3f}".format(
+          "[Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
             iter, processed_batches, num_batches, loss, acc))
 
-        if (i+1) % 100 == 0:
+        if (i+1) % self.hp.eval_every == 0:
           self.eval()
 
   def eval(self):
@@ -132,12 +165,11 @@ class Experiment(object):
     arg1, arg2, conn, label = examples
 
     loss, acc = self.sess.run(
-      [self.model.loss, self.model.acc], feed_dict={
-        self.model.arg1: arg1,
-        self.model.arg2: arg2,
-        self.model.conn: conn,
-        self.model.label: label
-      }
+      [self.model.loss, self.model.acc],
+      feed_dict={self.model.arg1: arg1,
+                 self.model.arg2: arg2,
+                 self.model.conn: conn,
+                 self.model.label: label}
     )
 
     tf.logging.info("[EVAL] loss: {:.3f} acc: {:.3f}".format(loss, acc))
@@ -150,13 +182,22 @@ class Experiment(object):
     examples = self.embedding.convert_to_ids(examples, self.label_mapping)
     arg1, arg2, conn, label = examples
 
-    acc = self.sess.run(
-      [self.model.acc], feed_dict={
-        self.model.arg1 : arg1,
-        self.model.arg2 : arg2,
-        self.model.conn : conn,
-        self.model.label: label
-      }
+    preds, acc = self.sess.run(
+      [self.model.preds, self.model.acc],
+      feed_dict={self.model.arg1 : arg1,
+                 self.model.arg2 : arg2,
+                 self.model.conn : conn,
+                 self.model.label: label}
     )
 
-    tf.logging.info("[PREDICT] acc: {:.3f}".format( acc))
+    tf.logging.info("[PREDICT] acc: {:.3f}".format(acc))
+
+    # convert label_id preds to labels
+    inverse_label_mapping = {v:k for k,v in self.label_mapping.items()}
+    preds_str = [inverse_label_mapping[pred] for pred in preds]
+
+    preds_file = os.path.join(self.hp.model_dir, "predictions.txt")
+
+    tf.logging.info(f"Exporting predictions at {preds_file}")
+    with open(preds_file, 'w') as f:
+      f.write("\n".join(preds_str))
