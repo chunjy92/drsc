@@ -55,6 +55,10 @@ class PDTBProcessor(object):
   def labels(self):
     return self._labels
 
+  def remove_cache_by_key(self, key):
+    if key in self._cached:
+      self._cached.pop(key)
+
   def compile_labels(self, train_instances=None):
     """Collects unique label set from training instances"""
     if self.labels is not None:

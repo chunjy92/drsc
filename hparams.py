@@ -19,7 +19,11 @@ class HParams(object):
       embedding=flags.embedding,
 
       # model specification
-      model=flags.model
+      model=flags.model,
+
+      do_train=flags.do_train,
+      do_eval=flags.do_eval,
+      do_predict=flags.do_predict,
 
     )
 

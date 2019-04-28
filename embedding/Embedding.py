@@ -81,6 +81,8 @@ class Embedding(object):
     Returns:
 
     """
+    arg1, arg2, conn, labels = [], [], [], []
+
     def convert_single_example(example):
       data = []
       for tokens in [example.arg1, example.arg2, example.conn]:
@@ -89,19 +91,28 @@ class Embedding(object):
           for token in tokens:
             token_ids.append(
               self.vocab.index(token) if token in self.vocab else 1) # UNK at 1
+        # unocmment below if empty conns get max_length of [0]
         else:
           token_ids = [0] * self.max_arg_length # PAD at 0
         data.append(token_ids)
 
-      feature = InputFeatures(arg1=data[0], arg2=data[1], conn=data[2],
-                              label=label_mapping[example.label])
-      return feature
+      # convert label into one_hot
+      label_idx = label_mapping[example.label]
+      one_hot_label = np.zeros(len(label_mapping))
+      one_hot_label[label_idx] = 1
+      data.append(one_hot_label)
+      # feature = InputFeatures(arg1=data[0], arg2=data[1], conn=data[2],
+      #                         label=one_hot_label)
+      return data
 
-    features = []
     for example in examples:
-      features.append(convert_single_example(example))
+      feature = convert_single_example(example)
+      arg1.append(feature[0])
+      arg2.append(feature[1])
+      conn.append(feature[2])
+      labels.append(feature[3])
 
-    return features
+    return arg1, arg2, conn, labels
 
   def convert_to_values(self, examples):
     raise NotImplementedError()

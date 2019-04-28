@@ -10,9 +10,11 @@ class PDTBRelation(object):
     self.guid = guid # {dataset_type}-{doc_id}-{unique_id of the relation}
     self.exid = exid # {%d th example in selected dataset}
 
-    # data
+    # data, list of tokens
     self.arg1 = arg1
     self.arg2 = arg2
     self.conn = conn
+
+    # one-hot label
     self.label = label
     self.label_list = label_list

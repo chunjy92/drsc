@@ -20,6 +20,13 @@ parser.add_argument("--model", choices=const.MODELS,
 parser.add_argument("--embedding", choices=const.EMBEDDINGS,
                     help="which embedding to use")
 
+parser.add_argument(
+  "--do_train", action="store_true", help="whether to run training")
+parser.add_argument(
+  "--do_eval", action="store_true", help="whether to run eval")
+parser.add_argument(
+  "--do_predict", action="store_true", help="whether to run predict")
+
 
 def parse_args():
   return parser.parse_args()
