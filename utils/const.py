@@ -8,8 +8,12 @@ __author__ = 'Jayeol Chun'
 # resource paths
 HOME = os.path.expanduser("~") # [lycastus] /home/b/jchun
 RESOURCES = os.path.join(HOME, "Documents/Resources")
-BERT = os.path.join(RESOURCES, "bert_models")
 W2V = os.path.join(RESOURCES, "w2v")
+BERT = os.path.join(RESOURCES, "bert_models")
+BERT_TEMPLATE = os.path.join(BERT, "{}_L-12_H-768_A-12")
+BERT_CONFIG_FILE = "bert_config.json"
+BERT_VOCAB_FILE = "vocab.txt"
+BERT_CKPT_FILE = "bert_model.ckpt"
 
 # data paths
 WSJ = "/home/j/clp/chinese/corpora/wsj"

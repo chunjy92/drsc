@@ -37,13 +37,19 @@ parser.add_argument(
   help="whether to apply pooling on word vectors or on model outputs")
 parser.add_argument(
   "--conn_action", type=str.lower, help="how to handle connectives")
+parser.add_argument(
+  "--use_one_hot_embeddings", action="store_true", help="")
 
 # embedding config
 parser.add_argument(
-  "--do_finetune_embedding", action="store_true",
-  help="whether to finetune embedding")
+  "--bert_model", type=str.lower, default="uncased",
+  help="which bert model to use")
+
 parser.add_argument(
   "--word_vector_width", type=int, default=50, help="dimension of word vector")
+parser.add_argument(
+  "--do_finetune_embedding", action="store_true",
+  help="whether to finetune embedding")
 
 # model architecture config
 parser.add_argument(

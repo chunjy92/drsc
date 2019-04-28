@@ -7,7 +7,8 @@ import tensorflow as tf
 
 import model
 from data import PDTBProcessor
-from embedding import Embedding
+from embedding import BERTEmbedding, Embedding
+from utils import const
 
 __author__ = 'Jayeol Chun'
 
@@ -39,7 +40,28 @@ class Experiment(object):
 
     # init embedding
     if self.hp.embedding == 'bert':
-      raise NotImplementedError()
+      bert_model = const.BERT_TEMPLATE.format(self.hp.bert_model)
+      bert_config_file = os.path.join(bert_model, const.BERT_CONFIG_FILE)
+      bert_init_ckpt = os.path.join(bert_model, const.BERT_CKPT_FILE)
+      bert_vocab_file = os.path.join(bert_model, const.BERT_VOCAB_FILE)
+
+      self.embedding = BERTEmbedding(
+        model_dir=self.hp.model_dir,
+        bert_config_file=bert_config_file,
+        vocab_file=bert_vocab_file,
+        init_checkpoint=bert_init_ckpt,
+        batch_size=self.hp.batch_size,
+        max_arg_length=self.hp.max_arg_length,
+        truncation_mode=self.hp.truncation_mode,
+        do_lower_case=self.hp.do_lower_case,
+        use_one_hot_embeddings=self.hp.use_one_hot_embeddings
+      )
+
+      # embedding_outputs = self.embedding.run(examples)
+      # tf.logging.info("Exporting at " + embedding_pkl_file)
+      # with open(embedding_pkl_file, 'wb') as f:
+      #   pickle.dump(embedding_outputs, f, protocol=pickle.HIGHEST_PROTOCOL)
+
     else:
       if self.hp.embedding == 'googlenews':
         # reduce number of vocab and corresponding vector entries by collecting
@@ -54,8 +76,11 @@ class Experiment(object):
       self.embedding_table = self.embedding.get_embedding_table()
       vocab = self.embedding.get_vocab() # currently not used
 
+    tf.logging.info(f"{self.hp.embedding.upper()} embedding init")
+
     # init model
     self.build_model()
+    tf.logging.info(f"{self.hp.model.upper()} model init")
 
   def build_model(self):
     if self.hp.model == "mlp":
@@ -76,7 +101,6 @@ class Experiment(object):
     else:
       raise NotImplementedError()
 
-    tf.logging.info(f"{self.hp.model.upper()} model init")
 
   # TODO (April 27)
   def load(self):
@@ -130,6 +154,7 @@ class Experiment(object):
     # sess handled by Experiment obj, not by each model
     self.sess = tf.Session(config=config)
 
+    # TODO: How to integrate BERT outputs..
     self.sess.run(
       [init, self.model.embedding_init_op],
       feed_dict={self.model.embedding_placeholder: self.embedding_table})
@@ -147,10 +172,9 @@ class Experiment(object):
         arg1, arg2, conn, label = batch
         _, loss, acc = self.sess.run(
           [self.model.train_op, self.model.loss, self.model.acc],
-          feed_dict={self.model.arg1: arg1,
-                     self.model.arg2: arg2,
-                     self.model.conn: conn,
-                     self.model.label: label})
+          feed_dict={self.model.arg1: arg1, self.model.arg2: arg2,
+                     self.model.conn: conn, self.model.label: label})
+
         processed_batches += 1
         tf.logging.info(
           "[Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
@@ -166,11 +190,8 @@ class Experiment(object):
 
     loss, acc = self.sess.run(
       [self.model.loss, self.model.acc],
-      feed_dict={self.model.arg1: arg1,
-                 self.model.arg2: arg2,
-                 self.model.conn: conn,
-                 self.model.label: label}
-    )
+      feed_dict={self.model.arg1: arg1, self.model.arg2: arg2,
+                 self.model.conn: conn, self.model.label: label})
 
     tf.logging.info("[EVAL] loss: {:.3f} acc: {:.3f}".format(loss, acc))
 
@@ -184,11 +205,8 @@ class Experiment(object):
 
     preds, acc = self.sess.run(
       [self.model.preds, self.model.acc],
-      feed_dict={self.model.arg1 : arg1,
-                 self.model.arg2 : arg2,
-                 self.model.conn : conn,
-                 self.model.label: label}
-    )
+      feed_dict={self.model.arg1 : arg1, self.model.arg2 : arg2,
+                 self.model.conn : conn, self.model.label: label})
 
     tf.logging.info("[PREDICT] acc: {:.3f}".format(acc))
 
