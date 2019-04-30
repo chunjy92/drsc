@@ -28,18 +28,32 @@ class Experiment(object):
       multiple_senses_action=self.hp.multiple_senses_action
     )
 
-    vocab = None
+    self.vocab = None
     if not self.hp.embedding:
       # if no embedding is specified, need to collect vocab from training set
       self.processor.compile_vocab_labels()
-      vocab = self.processor.vocab
+      self.vocab = self.processor.vocab
     else:
       self.processor.compile_labels()
 
     self.labels = self.processor.labels
-    self.label_mapping = self.processor.get_label_mapping()
 
-    # init embedding
+    # label to index
+    self.l2i = lambda l: self.labels.index(l)
+
+    # index to label
+    self.i2l = lambda i: self.labels[i]
+
+    self.init_embedding()
+    # if not self.vocab:
+    #   self.vocab = self.embedding.get_vocab()
+    tf.logging.info("Embedding init")
+
+    self.init_model()
+    tf.logging.info("Model init")
+
+  ################################### INIT #####################################
+  def init_embedding(self):
     if self.hp.embedding == 'bert':
       bert_model = const.BERT_TEMPLATE.format(self.hp.bert_model)
       bert_config_file = os.path.join(bert_model, const.BERT_CONFIG_FILE)
@@ -58,14 +72,12 @@ class Experiment(object):
         use_one_hot_embeddings=self.hp.use_one_hot_embeddings
       )
 
-      # embedding_outputs = self.embedding.run(examples)
-      # tf.logging.info("Exporting at " + embedding_pkl_file)
-      # with open(embedding_pkl_file, 'wb') as f:
-      #   pickle.dump(embedding_outputs, f, protocol=pickle.HIGHEST_PROTOCOL)
+      self.hp.word_vector_width = 768
+      self.embedding_table = None
 
     else:
       # reduce number of vocab and corresponding vector entries by collecting
-      # all unique tokens in dev, test and train
+      # all unique tokens in dev, test and train, which slows down
       vocab = self.processor.collect_all_vocab()
       tf.logging.info(f"All Vocab: {len(vocab)}")
 
@@ -74,14 +86,8 @@ class Experiment(object):
                                  max_arg_length=self.hp.max_arg_length)
 
       self.embedding_table = self.embedding.get_embedding_table()
-      vocab = self.embedding.get_vocab() # currently not used
-    tf.logging.info("Embedding init")
 
-    # init model
-    self.build_model()
-    tf.logging.info(f"{self.hp.model.upper()} model init")
-
-  def build_model(self):
+  def init_model(self):
     if self.hp.model == "mlp":
       self.model = model.MLP(
         labels=self.labels,
@@ -98,14 +104,55 @@ class Experiment(object):
         do_finetune_embedding=self.hp.do_finetune_embedding
       )
     else:
-      raise NotImplementedError()
+      # self.model = model.Attention(
+      #   labels=self.labels,
+      #   max_arg_length=self.hp.max_arg_length,
+      #   word_vector_width=self.hp.word_vector_width,
+      #   hidden_size=self.hp.hidden_size,
+      #   num_hidden_layers=self.hp.num_hidden_layers,
+      #   learning_rate=self.hp.learning_rate,
+      #   optimizer=self.hp.optimizer,
+      #   sense_type=self.hp.sense_type,
+      #   pooling_action=self.hp.pooling_action,
+      #   do_pooling_first=self.hp.do_pooling_first,
+      # )
+      self.model = model.Attention(self.labels)
 
-
-  # TODO (April 27)
+  ################################### UTIL #####################################
+  # TODO (April 27): is this really necessary? Currently not saving any model
+  #   meta-data, including graphs and ckpts
   def load(self):
     pass
 
+  def batchify(self, examples, batch_size, do_shuffle=False):
+    if do_shuffle:
+      random.shuffle(examples)
+
+    batches = []
+    for start in range(0, len(examples), batch_size):
+      batch = examples[start:start+batch_size]
+      batches.append(batch)
+
+    return batches
+
+  #################################### RUN #####################################
   def run(self):
+    """Defines overall execution scheme consisting of 3 stages: train, eval and
+    predict
+
+    Each function has two versions: `{}_from_ids` and `{}_from_vals`.
+
+    (1) `{}_from_ids` is when the loaded embedding is passed directly to the
+        model, where values for each instance is retrieved through
+        `tf.nn.embedding_lookup`.
+
+    (2) `{}_from_vals` is when each data instance is converted into values
+        before entering the TF computation graph, essentially equivalent to
+        manual `tf.nn.embedding_lookup`. This is necessary when `self.embedding`
+        is `BERTEmbedding` which will create a large output for each instance.
+        Besides, each token will have different values in different contexts,
+        so the conventional retrieval methods through id look-up doesn't work.
+    """
     if self.hp.do_train:
       tf.logging.info("***** Begin Train *****")
       self.train()
@@ -124,22 +171,20 @@ class Experiment(object):
       tf.logging.info("***** Begin Predict *****")
       self.predict()
 
-  def batchify(self, examples, batch_size, do_shuffle=False):
-    if do_shuffle:
-      random.shuffle(examples)
-
-    batches = []
-    for start in range(0, len(examples), batch_size):
-      batch = examples[start:start+batch_size]
-      batches.append(batch)
-
-    return batches
-
+  ################################### TRAIN ####################################
   def train(self):
-    examples = self.processor.get_train_examples()
+    """See docstring for `run`"""
+
+    if self.hp.embedding == 'bert':
+      examples = self.processor.get_train_examples(for_bert_embedding=True)
+      train_fn = self.train_from_vals
+    else:
+      examples = self.processor.get_train_examples()
+      train_fn = self.train_from_ids
+
     self.processor.remove_cache_by_key('train')
 
-    init = tf.global_variables_initializer()
+    self.init = tf.global_variables_initializer()
 
     tvars = tf.trainable_variables()
     tf.logging.info("***** Trainable Variables *****")
@@ -154,9 +199,25 @@ class Experiment(object):
     # sess handled by Experiment obj, not by each model
     self.sess = tf.Session(config=config)
 
-    # TODO: How to integrate BERT outputs..
+    train_fn(examples)
+
+  def train_from_vals(self, examples):
+    bert_output = self.embedding.run(examples)
+
+    self.sess.run(self.init)
+
+    for iter in range(self.hp.num_iter):
+      feat_batches = self.batchify(examples, batch_size=self.hp.batch_size,
+                                   do_shuffle=True)
+      num_batches = len(feat_batches)
+      tf.logging.info(f"Created {num_batches} batches.")
+
+      # processed_batches = 0
+      # for i, batch in enumerate(feat_batches):
+
+  def train_from_ids(self, examples, l2_reg_weights=None):
     self.sess.run(
-      [init, self.model.embedding_init_op],
+      [self.init, self.model.embedding_init_op],
       feed_dict={self.model.embedding_placeholder: self.embedding_table})
 
     for iter in range(self.hp.num_iter):
@@ -167,13 +228,13 @@ class Experiment(object):
 
       processed_batches = 0
       for i, batch in enumerate(feat_batches):
-        batch = self.embedding.convert_to_ids(batch, self.label_mapping)
+        batch = self.embedding.convert_to_ids(batch, self.l2i)
 
-        arg1, arg2, conn, label = batch
+        arg1, arg2, conn, label_ids = batch
         _, preds, loss, acc = self.sess.run(
           [self.model.train_op, self.model.preds, self.model.loss, self.model.acc],
           feed_dict={self.model.arg1: arg1, self.model.arg2: arg2,
-                     self.model.conn: conn, self.model.label: label})
+                     self.model.conn: conn, self.model.label: label_ids})
         c = Counter(preds)
         for key in c.keys():
           tf.logging.info(self.labels[key])
@@ -185,9 +246,25 @@ class Experiment(object):
         if (i+1) % self.hp.eval_every == 0:
           self.eval()
 
+  ################################### EVAL #####################################
   def eval(self):
-    examples = self.processor.get_dev_examples()
-    examples = self.embedding.convert_to_ids(examples, self.label_mapping)
+    """See docstring for `run`"""
+
+    if self.hp.embedding == 'bert':
+      examples = self.processor.get_dev_examples(for_bert_embedding=True)
+      eval_fn = self.eval_from_vals
+    else:
+      examples = self.processor.get_dev_examples()
+      eval_fn = self.eval_from_ids
+
+    eval_fn(examples)
+
+  def eval_from_vals(self, examples):
+    examples = self.embedding.run(examples)
+
+  def eval_from_ids(self, examples):
+
+    examples = self.embedding.convert_to_ids(examples, self.l2i)
     arg1, arg2, conn, label = examples
 
     loss, preds, acc = self.sess.run(
@@ -198,12 +275,37 @@ class Experiment(object):
     c = Counter(preds)
     tf.logging.info("[EVAL] loss: {:.3f} acc: {:.3f} {}".format(loss, acc, c))
 
-
+  ################################## PREDICT ###################################
   def predict(self):
-    examples = self.processor.get_test_examples()
+    """See docstring for `run`"""
+
+    if self.hp.embedding == 'bert':
+      examples = self.processor.get_test_examples(for_bert_embedding=True)
+      predict_fn = self.predict_from_vals
+    else:
+      examples = self.processor.get_test_examples()
+      predict_fn = self.predict_from_ids
+
+    tf.logging.info("Inference on test set")
+    self.processor.remove_cache_by_key("test")
+    predict_fn(examples)
+
+    if self.hp.embedding == 'bert':
+      examples = self.processor.get_blind_examples(for_bert_embedding=True)
+    else:
+      examples = self.processor.get_blind_examples()
+
+    tf.logging.info("Inference on blind set")
+    self.processor.remove_cache_by_key("blind")
+    predict_fn(examples)
+
+  def predict_from_vals(self, examples):
+    examples = self.embedding.run(examples)
+
+  def predict_from_ids(self, examples):
     self.processor.remove_cache_by_key('test')
 
-    examples = self.embedding.convert_to_ids(examples, self.label_mapping)
+    examples = self.embedding.convert_to_ids(examples, self.l2i)
     arg1, arg2, conn, label = examples
 
     preds, acc = self.sess.run(
@@ -216,8 +318,7 @@ class Experiment(object):
 
 
     # convert label_id preds to labels
-    inverse_label_mapping = {v:k for k,v in self.label_mapping.items()}
-    preds_str = [inverse_label_mapping[pred] for pred in preds]
+    preds_str = [self.i2l(pred) for pred in preds]
 
     preds_file = os.path.join(self.hp.model_dir, "predictions.txt")
 

@@ -19,7 +19,8 @@ class MLP(object):
                conn_action=None,
                embedding_shape=None,
                do_pooling_first=False,
-               do_finetune_embedding=False):
+               do_finetune_embedding=False,
+               scope=None):
     # model architecture will slightly vary depending on combinations of:
     # [dataset_type, pooling_action, conn_action]
     self.sense_type = sense_type # see const.DATASET_TYPES
@@ -48,23 +49,15 @@ class MLP(object):
     self.embedding_shape = embedding_shape
     self.do_finetune_embedding = do_finetune_embedding
 
-    self.build()
+    self.build(scope)
 
-  def build_dense_layers_single_input(self, input, num_layers=None):
+  def build_dense_layers_single_input(self, input_tensor, num_layers=None):
     num_layers = num_layers if num_layers else self.num_hidden_layers
 
-    output = input
+    output = input_tensor
 
     for i in range(num_layers):
       with tf.variable_scope(f"layer_{i}"):
-
-        # if i == num_layers-1:
-        #   hidden_size = self.num_labels
-        #         #   activation = None
-        # else:
-        #   hidden_size = self.hidden_size
-        #   activation = tf.nn.tanh
-
         output = tf.layers.dense(
           name="dense",
           inputs=output,
@@ -116,14 +109,13 @@ class MLP(object):
 
     return tf.nn.tanh(logits, name="combine_tanh")
 
-  def build(self):
-    with tf.variable_scope("mlp"):
+  def build(self, scope=None):
+    with tf.variable_scope(scope, default_name="mlp_model"):
       self.arg1 = tf.placeholder(tf.int32, [None, self.max_arg_length],
                                  name="arg1")
       self.arg2 = tf.placeholder(tf.int32, [None, self.max_arg_length],
                                  name="arg2")
-      self.label = tf.placeholder(tf.int32, [None, self.num_labels],
-                                  name="label")
+      self.label = tf.placeholder(tf.int32, [None], name="label")
       # TODO: max_len for conn???
       self.conn = tf.placeholder(tf.int32, [None, self.max_arg_length],
                                  name="conn")
@@ -139,7 +131,6 @@ class MLP(object):
         arg1_embedding = tf.nn.embedding_lookup(self.embedding_table, self.arg1)
         arg2_embedding = tf.nn.embedding_lookup(self.embedding_table, self.arg2)
 
-        tf.logging.info(f"ARg1 Embed Shape: {arg1_embedding.shape}")
         # conn_embedding = tf.nn.embedding_lookup(self.embedding_table, self.conn)
 
       if self.sense_type == "implicit":
@@ -150,16 +141,10 @@ class MLP(object):
             arg2_pooled = apply_pooling_fn(arg2_embedding,
                                            pooling_action=self.pooling_action)
 
-            tf.logging.info(f"ARg1 Pooled Shape: {arg1_pooled.shape}")
-
           combined = self.linearly_combine_tensors(arg1_pooled, arg2_pooled,
                                                    add_bias=True)
 
-          tf.logging.info(f"Combined Shape: {combined.shape}")
-
           output = self.build_dense_layers_single_input(combined)
-
-          tf.logging.info(f"Dense Output Shape: {output.shape}")
 
         else:
           raise NotImplementedError(
@@ -181,13 +166,16 @@ class MLP(object):
     with tf.variable_scope("loss"):
       logits = tf.matmul(output, output_weights, transpose_b=True)
       logits = tf.nn.bias_add(logits, output_bias)
-      self.preds = tf.argmax(logits, axis=-1)
-      golds = tf.argmax(self.label, axis=-1)
-      self.acc = tf.reduce_mean(tf.cast(tf.equal(self.preds, golds), "float"),
-                                                            name="accuracy")
+      self.preds = tf.cast(tf.argmax(logits, axis=-1), tf.int32)
+
+      one_hot_labels = tf.one_hot(self.label, depth=self.num_labels,
+                                  dtype=tf.float32)
+
+      self.acc = tf.reduce_mean(
+        tf.cast(tf.equal(self.preds, self.label), "float"), name="accuracy")
 
       self.per_example_loss = tf.nn.softmax_cross_entropy_with_logits_v2(
-        labels=self.label,
+        labels=one_hot_labels,
         logits=logits
       )
       self.loss = tf.reduce_mean(self.per_example_loss)
@@ -217,34 +205,34 @@ class MLP(object):
     optimizer = get_optimizer(self.optimizer)
     self.train_op = optimizer(self.learning_rate).minimize(self.loss)
 
-def apply_join_fn(input_tensor, second_tensor, join_action=None):
-  if join_action == "sum":
-    if second_tensor:
-      return tf.add(input_tensor, second_tensor)
-    return tf.reduce_sum(input_tensor, axis=1)
-  elif join_action == "mean":
-    if second_tensor:
-      return tf.reduce_mean([input_tensor, second_tensor], axis=0)
-    return tf.reduce_mean(input_tensor, axis=1)
-  elif join_action == "max":
-    if second_tensor:
-      return tf.reduce_max([input_tensor, second_tensor], axis=0)
-    return tf.reduce_max(input_tensor, axis=1)
-  elif join_action in ["concat", 'matmul']:
-    # usually works on model outputs for each arg1 and arg2
-    if not second_tensor:
-      raise ValueError("Second tensor passed as `None` value")
-    input_tensor_shape = input_tensor.shape
-    second_tensor_shape = second_tensor.shape
-    assert_op = tf.assert_equal(input_tensor_shape, second_tensor_shape)
-    with tf.control_dependencies([assert_op]):
-      if join_action == 'concat':
-        return tf.concat([input_tensor, second_tensor], axis=-1)
-      else:
-        return tf.multiply(input_tensor, second_tensor)
-
-  else:
-    raise ValueError(f"{join_action} pooling function not understood")
+# def apply_join_fn(input_tensor, second_tensor, join_action=None):
+#   if join_action == "sum":
+#     if second_tensor:
+#       return tf.add(input_tensor, second_tensor)
+#     return tf.reduce_sum(input_tensor, axis=1)
+#   elif join_action == "mean":
+#     if second_tensor:
+#       return tf.reduce_mean([input_tensor, second_tensor], axis=0)
+#     return tf.reduce_mean(input_tensor, axis=1)
+#   elif join_action == "max":
+#     if second_tensor:
+#       return tf.reduce_max([input_tensor, second_tensor], axis=0)
+#     return tf.reduce_max(input_tensor, axis=1)
+#   elif join_action in ["concat", 'matmul']:
+#     # usually works on model outputs for each arg1 and arg2
+#     if not second_tensor:
+#       raise ValueError("Second tensor passed as `None` value")
+#     input_tensor_shape = input_tensor.shape
+#     second_tensor_shape = second_tensor.shape
+#     assert_op = tf.assert_equal(input_tensor_shape, second_tensor_shape)
+#     with tf.control_dependencies([assert_op]):
+#       if join_action == 'concat':
+#         return tf.concat([input_tensor, second_tensor], axis=-1)
+#       else:
+#         return tf.multiply(input_tensor, second_tensor)
+#
+#   else:
+#     raise ValueError(f"{join_action} pooling function not understood")
 
 
 def apply_pooling_fn(input_tensor, second_tensor=None, pooling_action=None):

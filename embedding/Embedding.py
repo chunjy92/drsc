@@ -152,7 +152,7 @@ class Embedding(object):
   def get_vocab(self):
     return self.vocab
 
-  def convert_to_ids(self, examples, label_mapping):
+  def convert_to_ids(self, examples, l2i):
     """
 
     Args:
@@ -161,7 +161,7 @@ class Embedding(object):
     Returns:
 
     """
-    arg1, arg2, conn, labels = [], [], [], []
+    arg1, arg2, conn, label_ids = [], [], [], []
 
     def convert_single_example(example):
       data = []
@@ -177,10 +177,15 @@ class Embedding(object):
         data.append(token_ids)
 
       # convert label into one_hot
-      label_idx = label_mapping[example.label]
-      one_hot_label = np.zeros(len(label_mapping))
-      one_hot_label[label_idx] = 1
-      data.append(one_hot_label)
+      # UPDATE (April 29): don't. Do this during loss calculation
+      # label_idx = label_mapping(example.label)
+      # one_hot_label = np.zeros(len(label_mapping))
+      # one_hot_label[label_idx] = 1
+      # data.append(one_hot_label)
+      label_id = l2i(example.label)
+      data.append(label_id)
+
+
       # tf.logging.info(f"Label info: {example.label} {label_idx} {one_hot_label}")
       # feature = InputFeatures(arg1=data[0], arg2=data[1], conn=data[2],
       #                         label=one_hot_label)
@@ -191,9 +196,12 @@ class Embedding(object):
       arg1.append(feature[0])
       arg2.append(feature[1])
       conn.append(feature[2])
-      labels.append(feature[3])
+      label_ids.append(feature[3])
 
-    return arg1, arg2, conn, labels
+    return arg1, arg2, conn, label_ids
+
+  def run(self, examples):
+    raise NotImplementedError()
 
   def convert_to_values(self, examples):
     raise NotImplementedError()

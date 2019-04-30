@@ -21,7 +21,8 @@ PDTB = "./data/pdtb"
 CONLL = os.path.join(PDTB, "conll")
 
 # config choices
-MODELS = ['mlp']
+MODELS = ['mlp',  # TE's best model
+          'inter_attn', 'self_attn', 'inter_intra_attn', 'inter_self_attn']
 EMBEDDINGS = ['bert',
               'glove.6B.50d', # uncased
               'glove.6B.100d', # uncased

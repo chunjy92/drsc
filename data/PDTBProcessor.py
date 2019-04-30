@@ -59,7 +59,7 @@ class PDTBProcessor(object):
     if key in self._cached:
       self._cached.pop(key)
 
-  def collect_all_vocab(self):
+  def collect_all_vocab(self, include_blind=False):
     vocab = self.vocab
     if not vocab:
       self.compile_vocab_labels()
@@ -69,17 +69,24 @@ class PDTBProcessor(object):
 
     dev_examples = self.get_dev_examples()
     test_examples = self.get_test_examples()
+    all_examples_by_dataset = [dev_examples, test_examples]
 
-    for dataset_examples in [dev_examples, test_examples]:
+    if include_blind:
+      blind_examples = self.get_blind_examples()
+      all_examples_by_dataset.append(blind_examples)
+
+    for dataset_examples in all_examples_by_dataset:
       for example in dataset_examples:
         vocab.update(example.arg1)
         vocab.update(example.arg2)
         if example.conn:
           vocab.update(example.conn)
+
     return list(vocab)
 
   def compile_labels(self, instances=None):
-    """Collects unique label set from training instances"""
+    """Collects unique label set from given instances (defaults to training
+    instances)"""
     if not instances:
       tf.logging.info("Compiling labels from training set")
       self._cached['train'] = instances = self.get_train_examples()
@@ -107,34 +114,44 @@ class PDTBProcessor(object):
     self._vocab = sorted(vocab)
     self._labels = sorted(labels)
 
-  def get_label_mapping(self):
-    label_map = {}
-    for (i, label) in enumerate(self.labels):
-      label_map[label] = i
-    return label_map
-
-  def get_train_examples(self, rel_filename=None, parse_filename=None):
+  def get_train_examples(self, rel_filename=None, parse_filename=None,
+                         for_bert_embedding=False):
     rel_filename = rel_filename if rel_filename else \
       "pdtb-data-01-20-15-train.json"
     parse_filename = parse_filename if parse_filename else \
       "pdtb-parses-01-12-15-train.json"
-    return self._create_examples("train", rel_filename, parse_filename)
+    return self._create_examples("train", rel_filename, parse_filename,
+                                 for_bert_embedding=for_bert_embedding)
 
-  def get_dev_examples(self, rel_filename=None, parse_filename=None):
+  def get_dev_examples(self, rel_filename=None, parse_filename=None,
+                       for_bert_embedding=False):
     rel_filename = rel_filename if rel_filename else \
       "pdtb-data-01-20-15-dev.json"
     parse_filename = parse_filename if parse_filename else \
       "pdtb-parses-01-12-15-dev.json"
-    return self._create_examples("dev", rel_filename, parse_filename)
+    return self._create_examples("dev", rel_filename, parse_filename,
+                                 for_bert_embedding=for_bert_embedding)
 
-  def get_test_examples(self, rel_filename=None, parse_filename=None):
+  def get_test_examples(self, rel_filename=None, parse_filename=None,
+                        for_bert_embedding=False):
+    rel_filename = rel_filename if rel_filename else \
+      "pdtb-data.json"
+    parse_filename = parse_filename if parse_filename else \
+      "pdtb-parses.json"
+    return self._create_examples("test", rel_filename, parse_filename,
+                                 for_bert_embedding=for_bert_embedding)
+
+  def get_blind_examples(self, rel_filename=None, parse_filename=None,
+                        for_bert_embedding=False):
     rel_filename = rel_filename if rel_filename else \
       "relations.json"
     parse_filename = parse_filename if parse_filename else \
       "parses.json"
-    return self._create_examples("test", rel_filename, parse_filename)
+    return self._create_examples("blind", rel_filename, parse_filename,
+                                 for_bert_embedding=for_bert_embedding)
 
-  def _create_examples(self, dataset_type, rel_filename, parse_filename):
+  def _create_examples(self, dataset_type, rel_filename, parse_filename,
+                       for_bert_embedding=False):
     """Both Explicit and Implicit examples
 
     Args:
@@ -145,7 +162,7 @@ class PDTBProcessor(object):
       list of InputExamples
     """
     # check if cached
-    if dataset_type in self._cached:
+    if dataset_type in self._cached and not for_bert_embedding:
       res = self._cached[dataset_type]
       tf.logging.info(f"Loading {len(res)} cached {dataset_type} instances")
       return res
@@ -201,13 +218,15 @@ class PDTBProcessor(object):
           elif self.truncation_mode == 'reverse':
             tokens = tokens[::-1][:self.max_arg_length]
           else:
-            # TODO: other modes of truncation
-            #  most notably, REVERSE
             raise NotImplementedError()
 
-          # if less than max_arg_length, pad up with _PAD_
-          num_pad = self.max_arg_length - len(tokens)
-          tokens += [const.PAD] * num_pad
+          if for_bert_embedding:
+            # for compatibility
+            tokens = " ".join(tokens)
+          else:
+            # if less than max_arg_length, pad up with _PAD_
+            num_pad = self.max_arg_length - len(tokens)
+            tokens += [const.PAD] * num_pad
 
           tok_data[i] = tokens
 
