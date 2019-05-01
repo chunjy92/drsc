@@ -17,6 +17,7 @@ class MLP(object):
                sense_type='implicit',
                pooling_action='sum',
                conn_action=None,
+               embedding=None,
                embedding_shape=None,
                do_pooling_first=False,
                do_finetune_embedding=False,
@@ -46,9 +47,11 @@ class MLP(object):
     self.num_labels = len(self.labels)
 
     # embedding related
+    self.embedding = embedding
     self.embedding_shape = embedding_shape
     self.do_finetune_embedding = do_finetune_embedding
 
+    # model architecture will slightly vary depending on `self.embedding`.
     self.build(scope)
 
   def build_dense_layers_single_input(self, input_tensor, num_layers=None):
@@ -63,6 +66,7 @@ class MLP(object):
           inputs=output,
           units=self.hidden_size,
           kernel_initializer=tf.truncated_normal_initializer(stddev=0.02),
+          kernel_regularizer=tf.contrib.layers.l2_regularizer(scale=0.1),
           activation=tf.nn.tanh
         )
 
@@ -70,17 +74,16 @@ class MLP(object):
 
   def init_embedding(self, placeholder):
     embedding_table = tf.get_variable(
-      name="embedding",
+      name="embedding_table",
       shape=self.embedding_shape,
       trainable=self.do_finetune_embedding
     )
 
     self.embedding_init_op = embedding_table.assign(placeholder)
-
     return embedding_table
 
 
-  def linearly_combine_tensors(self, input_1, input_2, target_hidden_size=None,
+  def combine_pooled_tensors(self, input_1, input_2, target_hidden_size=None,
                                add_bias=False):
     hidden_size = input_1.shape[-1].value
     target_hidden_size = \
@@ -88,12 +91,14 @@ class MLP(object):
 
     weight_1 = tf.get_variable(
       f"combine_weight_{1}", [target_hidden_size, hidden_size],
-      initializer=tf.truncated_normal_initializer(stddev=0.02)
+      initializer=tf.truncated_normal_initializer(stddev=0.02),
+      regularizer=tf.contrib.layers.l2_regularizer(scale=0.1)
     )
 
     weight_2 = tf.get_variable(
       f"combine_weight_{2}", [target_hidden_size, hidden_size],
-      initializer=tf.truncated_normal_initializer(stddev=0.02)
+      initializer=tf.truncated_normal_initializer(stddev=0.02),
+      regularizer=tf.contrib.layers.l2_regularizer(scale=0.1)
     )
 
     input_1_matmul = tf.matmul(input_1, weight_1, transpose_b=True)
@@ -109,16 +114,30 @@ class MLP(object):
 
     return tf.nn.tanh(logits, name="combine_tanh")
 
-  def build(self, scope=None):
-    with tf.variable_scope(scope, default_name="mlp_model"):
+  def build_input_pipeline(self):
+    if self.embedding == "bert":
+      self.arg1 = tf.placeholder(
+        tf.float32, [None, self.max_arg_length, self.word_vector_width],
+        name="arg1")
+      self.arg2 = tf.placeholder(
+        tf.float32, [None, self.max_arg_length, self.word_vector_width],
+        name="arg2")
+      # TODO: max_len for conn???
+      self.conn = tf.placeholder(
+        tf.float32, [None, self.max_arg_length, self.word_vector_width],
+        name="conn")
+      self.label = tf.placeholder(tf.int32, [None], name="label")
+
+      return self.arg1, self.arg2
+    else:
       self.arg1 = tf.placeholder(tf.int32, [None, self.max_arg_length],
                                  name="arg1")
       self.arg2 = tf.placeholder(tf.int32, [None, self.max_arg_length],
                                  name="arg2")
-      self.label = tf.placeholder(tf.int32, [None], name="label")
       # TODO: max_len for conn???
       self.conn = tf.placeholder(tf.int32, [None, self.max_arg_length],
                                  name="conn")
+      self.label = tf.placeholder(tf.int32, [None], name="label")
 
       self.embedding_placeholder = \
         tf.placeholder(tf.float32, self.embedding_shape,
@@ -128,20 +147,24 @@ class MLP(object):
 
       # embedding lookup
       with tf.variable_scope("embedding"):
-        arg1_embedding = tf.nn.embedding_lookup(self.embedding_table, self.arg1)
-        arg2_embedding = tf.nn.embedding_lookup(self.embedding_table, self.arg2)
+        arg1 = tf.nn.embedding_lookup(self.embedding_table, self.arg1)
+        arg2 = tf.nn.embedding_lookup(self.embedding_table, self.arg2)
 
-        # conn_embedding = tf.nn.embedding_lookup(self.embedding_table, self.conn)
+      return arg1, arg2
+
+  def build(self, scope=None):
+    with tf.variable_scope(scope, default_name="mlp_model"):
+      arg1, arg2 = self.build_input_pipeline()
 
       if self.sense_type == "implicit":
         if self.do_pooling_first:
           with tf.variable_scope("pooling"):
-            arg1_pooled = apply_pooling_fn(arg1_embedding,
+            arg1_pooled = apply_pooling_fn(arg1,
                                            pooling_action=self.pooling_action)
-            arg2_pooled = apply_pooling_fn(arg2_embedding,
+            arg2_pooled = apply_pooling_fn(arg2,
                                            pooling_action=self.pooling_action)
 
-          combined = self.linearly_combine_tensors(arg1_pooled, arg2_pooled,
+          combined = self.combine_pooled_tensors(arg1_pooled, arg2_pooled,
                                                    add_bias=True)
 
           output = self.build_dense_layers_single_input(combined)
@@ -158,7 +181,8 @@ class MLP(object):
 
     output_weights = tf.get_variable(
       "output_weights", [self.num_labels, hidden_size],
-      initializer=tf.truncated_normal_initializer(stddev=0.02))
+      initializer=tf.truncated_normal_initializer(stddev=0.02),
+      regularizer=tf.contrib.layers.l2_regularizer(scale=0.1))
 
     output_bias = tf.get_variable(
       "output_bias", [self.num_labels], initializer=tf.zeros_initializer())
@@ -178,7 +202,11 @@ class MLP(object):
         labels=one_hot_labels,
         logits=logits
       )
-      self.loss = tf.reduce_mean(self.per_example_loss)
+      loss = tf.reduce_mean(self.per_example_loss)
+
+      reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+      reg_constant = 0.01
+      self.loss = loss + reg_constant * tf.reduce_sum(reg_losses)
 
       # probabilities = tf.nn.softmax(logits, axis=-1)
       # log_probs = tf.nn.log_softmax(logits, axis=-1)
@@ -186,58 +214,11 @@ class MLP(object):
       # per_example_loss = -tf.reduce_sum(tf.cast(self.label, tf.float32) * log_probs, axis=-1)
       # self.loss = tf.reduce_mean(per_example_loss)
 
-    # with tf.variable_scope("loss"):
-    #   logits = output
-    #
-    #   tf.logging.info(f"Logits Shape: {logits.shape}")
-    #
-    #   self.preds = tf.argmax(logits, axis=1)
-    #   golds = tf.argmax(self.label, axis=1)
-    #   self.acc = tf.reduce_mean(tf.cast(tf.equal(self.preds, golds), "float"),
-    #                             name="accuracy")
-    #
-    #   self.probabilities = tf.nn.softmax(logits, axis=-1)
-    #
-    #   log_probs = tf.nn.log_softmax(logits, axis=-1)
-    #   per_example_loss = -tf.reduce_sum(tf.cast(self.label, tf.float32) * log_probs, axis=-1)
-    #   self.loss = tf.reduce_mean(per_example_loss)
-
     optimizer = get_optimizer(self.optimizer)
     self.train_op = optimizer(self.learning_rate).minimize(self.loss)
 
-# def apply_join_fn(input_tensor, second_tensor, join_action=None):
-#   if join_action == "sum":
-#     if second_tensor:
-#       return tf.add(input_tensor, second_tensor)
-#     return tf.reduce_sum(input_tensor, axis=1)
-#   elif join_action == "mean":
-#     if second_tensor:
-#       return tf.reduce_mean([input_tensor, second_tensor], axis=0)
-#     return tf.reduce_mean(input_tensor, axis=1)
-#   elif join_action == "max":
-#     if second_tensor:
-#       return tf.reduce_max([input_tensor, second_tensor], axis=0)
-#     return tf.reduce_max(input_tensor, axis=1)
-#   elif join_action in ["concat", 'matmul']:
-#     # usually works on model outputs for each arg1 and arg2
-#     if not second_tensor:
-#       raise ValueError("Second tensor passed as `None` value")
-#     input_tensor_shape = input_tensor.shape
-#     second_tensor_shape = second_tensor.shape
-#     assert_op = tf.assert_equal(input_tensor_shape, second_tensor_shape)
-#     with tf.control_dependencies([assert_op]):
-#       if join_action == 'concat':
-#         return tf.concat([input_tensor, second_tensor], axis=-1)
-#       else:
-#         return tf.multiply(input_tensor, second_tensor)
-#
-#   else:
-#     raise ValueError(f"{join_action} pooling function not understood")
-
-
 def apply_pooling_fn(input_tensor, second_tensor=None, pooling_action=None):
   # tensor shape: [batch, arg_length, word_vector_width]
-  tf.logging.info(input_tensor.shape)
   if pooling_action == "sum":
     if second_tensor:
       return tf.add(input_tensor, second_tensor)

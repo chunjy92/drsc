@@ -61,7 +61,14 @@ class BERTEmbedding(object):
         "was only trained up to sequence length %d" %
         (self.max_arg_length, self.bert_config.max_position_embeddings))
 
-  def run(self, examples):
+    # cached embedding output
+    self._cached = {}
+
+  def run(self, examples, dataset_type=None):
+    if dataset_type and dataset_type in self._cached:
+      tf.logging.info("Loading from cached output")
+      return self._cached[dataset_type]
+
     features = convert_examples_to_embedding_features(
       examples, seq_length=self.max_arg_length, tokenizer=self.tokenizer)
 
@@ -84,6 +91,11 @@ class BERTEmbedding(object):
       batch_size=self.batch_size)
 
     tf.logging.info("Begin running BERT")
+    embedding_output_np = np.zeros(
+      [len(examples), self.max_arg_length*2,self.bert_config.hidden_size],
+      dtype=np.float
+    )
+
     embed_output_dict = {}
     for result in tqdm.tqdm(estimator.predict(input_fn,
                                               yield_single_examples=True)):
@@ -91,28 +103,38 @@ class BERTEmbedding(object):
       arg_type = result['arg_type']
       data = np.array(result['last_layer_output'])
 
-      if example_id in embed_output_dict:
-        if arg_type == 1:
-          # embed_output[example_id].append(data)
-          embed_output_dict[example_id] = \
-            np.concatenate([embed_output_dict[example_id], data], axis=0)
-        else:
-          embed_output_dict[example_id] = \
-            np.concatenate([data, embed_output_dict[example_id]], axis=0)
+      # if example_id in embed_output_dict:
+      #   if arg_type == 1:
+      #     # embed_output[example_id].append(data)
+      #     embed_output_dict[example_id] = \
+      #       np.concatenate([embed_output_dict[example_id], data], axis=0)
+      #   else:
+      #     embed_output_dict[example_id] = \
+      #       np.concatenate([data, embed_output_dict[example_id]], axis=0)
+      # else:
+      #   embed_output_dict[example_id] = data
+
+      if arg_type == 0:
+        embedding_output_np[example_id][:self.max_arg_length] = data
       else:
-        embed_output_dict[example_id] = data
+        embedding_output_np[example_id][self.max_arg_length:] = data
 
-    # first element: padding instance
-    embed_output_list = \
-      [np.zeros([self.max_arg_length*2, self.bert_config.hidden_size])]
-    sorted_keys = sorted(embed_output_dict.keys())
+    # # first element: padding instance
+    # embed_output_list = \
+    #   [np.zeros([self.max_arg_length*2, self.bert_config.hidden_size])]
+    # sorted_keys = sorted(embed_output_dict.keys())
 
-    for i in sorted_keys:
-      d = embed_output_dict[i]
-      embed_output_list.append(d)
+    # for i in sorted_keys:
+    #   d = embed_output_dict[i]
+    #   embed_output_list.append(d)
+    if dataset_type:
+      self._cached[dataset_type] = embedding_output_np
+
+    return embedding_output_np
+
 
     # return embed_output_dict
-    return embed_output_list
+    # return embed_output_list
 
   def get_embedding_table(self):
     raise ValueError(
@@ -162,7 +184,8 @@ def convert_examples_to_embedding_features(examples, seq_length, tokenizer):
     assert len(input_type_ids_b) == seq_length
 
     # example_id from ex_index
-    example_id = ex_index
+    # example_id = ex_index
+    example_id = example.exid
 
     features.extend(
         [BERTInputFeatures(
@@ -212,13 +235,13 @@ def model_fn_builder(bert_config, init_checkpoint, use_one_hot_embeddings):
 
     tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
 
-    tf.logging.info("**** Trainable Variables ****")
-    for var in tvars:
-      init_string = ""
-      if var.name in initialized_variable_names:
-        init_string = ", *INIT_FROM_CKPT*"
-      tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
-                      init_string)
+    # tf.logging.info("**** Trainable Variables ****")
+    # for var in tvars:
+    #   init_string = ""
+    #   if var.name in initialized_variable_names:
+    #     init_string = ", *INIT_FROM_CKPT*"
+    #   tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
+    #                   init_string)
 
     last_layer_output = model.get_sequence_output()
 

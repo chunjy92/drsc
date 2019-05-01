@@ -63,7 +63,7 @@ parser.add_argument(
   "--num_iter", type=int, default=3, help="how many iterations to train")
 parser.add_argument(
   "--eval_every", type=int, default=100,
-  help="how many batches per eval during training")
+  help="how many batches per eval during training (-1 to disable)")
 parser.add_argument(
   "--batch_size", type=int, default=64, help="batch size during training")
 parser.add_argument(

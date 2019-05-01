@@ -89,7 +89,8 @@ class PDTBProcessor(object):
     instances)"""
     if not instances:
       tf.logging.info("Compiling labels from training set")
-      self._cached['train'] = instances = self.get_train_examples()
+      instances = self.get_train_examples()
+      self.remove_cache_by_key("train")
 
     labels = set()
     for instance in instances:
