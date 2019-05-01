@@ -7,7 +7,7 @@ from bert import modeling
 __author__ = 'Jayeol Chun'
 
 
-class Attention(object):
+class Attentional(object):
   def __init__(self,
                labels,
                max_arg_length=128,
@@ -60,6 +60,7 @@ class Attention(object):
                         attention_probs_dropout_prob=0.1,
                         initializer_range=0.02,
                         do_return_all_layers=False):
+    """See `attention_layer` defined in `bert/modeling.py`"""
     # input tensor shape: [batch, arg_length, BERT_hidden_size]
     # effectively: [32, 128, 768]
     attention_head_size = int(self.hidden_size / self.num_attention_heads)
@@ -174,19 +175,25 @@ class Attention(object):
         name="conn")
 
       # placehodlers for attention_mask
+      self.arg1_attn_mask = tf.placeholder(
+        tf.int32, [None, self.max_arg_length], name="arg1_attention_mask")
+      self.arg2_attn_mask = tf.placeholder(
+        tf.int32, [None, self.max_arg_length], name="arg2_attention_mask")
 
-    # pos encoding
-    # self.encode_concat_context()
+      # segment ids (does not necessarily need to be a placeholder)
 
-    # attention mask # TODO
-    # attention_mask = modeling.create_attention_mask_from_input_mask(
-    #   input_ids, input_mask)
+      # pos encoding
+      # self.encode_concat_context()
 
-    # attention layers
-    self.all_encoder_layers = \
-      self.build_attn_layers(self.arg1, self.arg2)
+      # attention mask # TODO
+      # attention_mask = modeling.create_attention_mask_from_input_mask(
+      #   input_ids, input_mask)
 
-    self.sequence_output = self.all_encoder_layers[-1]
+      # attention layers
+      self.all_encoder_layers = \
+        self.build_attn_layers(self.arg1, self.arg2)
+
+      self.sequence_output = self.all_encoder_layers[-1]
 
   def get_sequence_output(self):
     """Gets final hidden layer of encoder.
@@ -199,4 +206,3 @@ class Attention(object):
 
   def get_all_encoder_layers(self):
     return self.all_encoder_layers
-

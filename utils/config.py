@@ -10,6 +10,8 @@ __author__ = 'Jayeol Chun'
 
 
 parser = argparse.ArgumentParser("DRSC Argparser")
+parser.register("type", "bool", lambda v: v.lower() == "true")
+
 
 parser.add_argument("--model_dir", required=True,
                     help="path to model output directory")
@@ -26,19 +28,21 @@ parser.add_argument(
   choices=const.TRUNC_MODES,
   help="how to truncate tokens longer than `max_arg_length`")
 parser.add_argument(
-  "--do_lower_case", action="store_true",
+  "--do_lower_case", type="bool", nargs="?", const=True, default=True,
   help="whether to lower case the input text. Should be True for uncased model "
        "and False for cased model")
 parser.add_argument(
   "--pooling_action", type=str.lower, default="sum",
   help="which pooling action to apply.")
 parser.add_argument(
-  "--do_pooling_first", action="store_true",
-  help="whether to apply pooling on word vectors or on model outputs")
+  "--do_pooling_first", type="bool", nargs="?", const=True, default=True,
+  help="whether to apply pooling on word vectors (True) or on model outputs "
+       "(False)")
 parser.add_argument(
   "--conn_action", type=str.lower, help="how to handle connectives")
 parser.add_argument(
-  "--use_one_hot_embeddings", action="store_true", help="")
+  "--use_one_hot_embeddings", type="bool", nargs="?", const=True, default=False,
+  help="")
 
 # embedding config
 parser.add_argument(
@@ -48,7 +52,7 @@ parser.add_argument(
 parser.add_argument(
   "--word_vector_width", type=int, default=50, help="dimension of word vector")
 parser.add_argument(
-  "--do_finetune_embedding", action="store_true",
+  "--do_finetune_embedding", type="bool", nargs="?", const=True, default=False,
   help="whether to finetune embedding")
 
 # model architecture config
@@ -89,11 +93,22 @@ parser.add_argument(
 
 # experiment control flags
 parser.add_argument(
-  "--do_train", action="store_true", help="whether to run training")
+  "--do_train", type="bool", nargs="?", const=True, default=False,
+  help="whether to run training")
 parser.add_argument(
-  "--do_eval", action="store_true", help="whether to run eval")
+  "--do_eval", type="bool", nargs="?", const=True, default=False,
+  help="whether to run eval")
 parser.add_argument(
-  "--do_predict", action="store_true", help="whether to run predict")
+  "--do_predict", type="bool", nargs="?", const=True, default=False,
+  help="whether to run predict")
+
+# misc flags
+parser.add_argument(
+  "--allow_gpu_growth", type="bool", nargs="?", const=True, default=True,
+  help="whether to allow gpu growth or pre-allocate all available resources")
+parser.add_argument(
+  "--do_debug", type="bool", nargs="?", const=True, default=False,
+  help="whether to set logging verbosity to DEBUG")
 
 
 def parse_args():
