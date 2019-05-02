@@ -12,7 +12,6 @@ __author__ = 'Jayeol Chun'
 parser = argparse.ArgumentParser("DRSC Argparser")
 parser.register("type", "bool", lambda v: v.lower() == "true")
 
-
 parser.add_argument("--model_dir", required=True,
                     help="path to model output directory")
 
@@ -50,17 +49,19 @@ parser.add_argument(
   help="which bert model to use")
 
 parser.add_argument(
-  "--word_vector_width", type=int, default=50, help="dimension of word vector")
+  "--word_vector_width", type=int, default=768, help="dimension of word vector")
 parser.add_argument(
   "--do_finetune_embedding", type="bool", nargs="?", const=True, default=False,
   help="whether to finetune embedding")
 
 # model architecture config
 parser.add_argument(
-  "--hidden_size", type=int, default=50, help="hidden size of model layers")
+  "--hidden_size", type=int, default=768, help="hidden size of model layers")
 parser.add_argument(
-  "--num_hidden_layers", type=int, default=2,
+  "--num_hidden_layers", type=int, default=4,
   help="number of model's hidden layers")
+parser.add_argument(
+  "--num_attention_heads", type=int, default=8, help="attention head number")
 
 # experimental setting config
 parser.add_argument(

@@ -22,7 +22,10 @@ CONLL = os.path.join(PDTB, "conll")
 
 # config choices
 MODELS = ['mlp',  # TE's best model
-          'inter_attn', 'self_attn', 'inter_intra_attn', 'inter_self_attn']
+          'inter_attn', 'inter_attention',
+          'self_attn', 'self_attention',
+          'inter_intra_attn', 'inter_intra_attention',
+          'inter_self_attn', 'inter_self_attention']
 EMBEDDINGS = ['bert',
               'glove.6B.50d', # uncased
               'glove.6B.100d', # uncased

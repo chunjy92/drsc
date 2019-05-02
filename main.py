@@ -12,7 +12,6 @@ __author__ = 'Jayeol Chun'
 
 FLAGS = None
 
-
 def main(_):
   begin = time.time()
 

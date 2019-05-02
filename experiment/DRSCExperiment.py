@@ -70,23 +70,20 @@ class DRSCExperiment(Experiment):
         do_finetune_embedding=self.hp.do_finetune_embedding
       )
     else:
-      # attention mask (for padding) and segment ids (For arg1 and arg2
-      # distinction)
-
-      # self.model = model.Attention(
-      #   labels=self.labels,
-      #   max_arg_length=self.hp.max_arg_length,
-      #   word_vector_width=self.hp.word_vector_width,
-      #   hidden_size=self.hp.hidden_size,
-      #   num_hidden_layers=self.hp.num_hidden_layers,
-      #   learning_rate=self.hp.learning_rate,
-      #   optimizer=self.hp.optimizer,
-      #   sense_type=self.hp.sense_type,
-      #   pooling_action=self.hp.pooling_action,
-      #   do_pooling_first=self.hp.do_pooling_first,
-      # )
-
-      self.model = model.Attentional(self.labels)
+      self.model = model.Attentional(
+        labels=self.labels,
+        attention_type=self.hp.model,
+        max_arg_length=self.hp.max_arg_length,
+        word_vector_width=self.hp.word_vector_width,
+        hidden_size=self.hp.hidden_size,
+        num_hidden_layers=self.hp.num_hidden_layers,
+        num_attention_heads=self.hp.num_attention_heads,
+        learning_rate=self.hp.learning_rate,
+        optimizer=self.hp.optimizer,
+        sense_type=self.hp.sense_type,
+        pooling_action=self.hp.pooling_action,
+        do_pooling_first=self.hp.do_pooling_first
+      )
 
   ################################### TRAIN ####################################
   def train(self):
@@ -119,66 +116,7 @@ class DRSCExperiment(Experiment):
 
     train_fn(examples)
 
-  def train_from_vals(self, examples):
-    bert_outputs = self.embedding.run(examples)
-
-    # coupling of these in prep for random shuffling
-    bert_examples_pair = \
-      [(example, bert_output)
-       for example, bert_output in zip(examples, bert_outputs)]
-
-    self.sess.run(self.init)
-
-    for iter in range(self.hp.num_iter):
-      bert_batches = self.batchify(bert_examples_pair,
-                                   batch_size=self.hp.batch_size,
-                                   do_shuffle=True)
-      num_batches = len(bert_batches)
-
-      processed_batches = 0
-      for i, batch in enumerate(bert_batches):
-
-        # tedious decoupling
-        label_ids = []
-        batch_bert_outputs = []
-        for batch_example, batch_bert_output in batch:
-          batch_bert_outputs.append(batch_bert_output)
-
-          # label
-          label_ids.append(self.l2i(batch_example.label))
-
-        # prepare bert output: [batch, total_seq_length, bert_hidden_size]
-        batch_bert_outputs = np.asarray(batch_bert_outputs)
-        total_seq_length = batch_bert_outputs.shape[1]
-        assert total_seq_length == self.hp.max_arg_length * 2, \
-          "Sequence length mismatch between BERT output and parameter"
-
-        arg1 = batch_bert_outputs[:,:self.hp.max_arg_length,:]
-        arg2 = batch_bert_outputs[:,self.hp.max_arg_length:,:]
-
-        # connectives
-        # since we don't care about connectives, make them 0 for now
-        conn = np.zeros([self.hp.batch_size,
-                         self.hp.max_arg_length,
-                         batch_bert_outputs.shape[-1]])
-
-        _, preds, loss, acc = self.sess.run(
-          [self.model.train_op, self.model.preds, self.model.loss,
-           self.model.acc],
-          feed_dict={self.model.arg1: arg1, self.model.arg2: arg2,
-                     self.model.conn: conn, self.model.label: label_ids})
-        c = Counter(preds)
-        for key in c.keys():
-          tf.logging.info(self.labels[key])
-        processed_batches += 1
-        tf.logging.info(
-          "[Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f} {}".format(
-            iter, processed_batches, num_batches, loss, acc, c))
-
-        if self.hp.eval_every > 0 and (i + 1) % self.hp.eval_every == 0:
-          self.eval()
-
-  def train_from_ids(self, examples, l2_reg_weights=None):
+  def train_from_ids(self, examples):
     self.sess.run(
       [self.init, self.model.embedding_init_op],
       feed_dict={self.model.embedding_placeholder: self.embedding_table})
@@ -209,6 +147,89 @@ class DRSCExperiment(Experiment):
         if self.hp.eval_every > 0 and (i + 1) % self.hp.eval_every == 0:
           self.eval()
 
+      if self.hp.eval_every < 0:
+        # eval every end of iteration
+        self.eval()
+
+  def train_from_vals(self, examples):
+    bert_outputs = self.embedding.run(examples)
+
+    # if isinstance(self.embedding, BERTEmbedding):
+    bert_outputs, exid_to_feature_mapping = bert_outputs
+
+    # coupling of these in prep for random shuffling
+    bert_examples_pair = \
+      [(example, bert_output)
+       for example, bert_output in zip(examples, bert_outputs)]
+
+    self.sess.run(self.init)
+
+    for iter in range(self.hp.num_iter):
+      bert_batches = self.batchify(bert_examples_pair,
+                                   batch_size=self.hp.batch_size,
+                                   do_shuffle=True)
+      num_batches = len(bert_batches)
+
+      for i, batch in enumerate(bert_batches):
+        # tedious decoupling
+        label_ids = []
+        batch_bert_outputs = []
+        arg1_mask = []
+        arg2_mask = []
+        for batch_example, batch_bert_output in batch:
+          batch_bert_outputs.append(batch_bert_output)
+
+          # label
+          label_ids.append(self.l2i(batch_example.label))
+
+          # mask
+          batch_example_id = batch_example.exid
+
+          batch_arg1_feature = exid_to_feature_mapping[batch_example_id][0]
+          batch_arg1_mask = batch_arg1_feature.input_mask
+          arg1_mask.append(batch_arg1_mask)
+
+          batch_arg2_feature = exid_to_feature_mapping[batch_example_id][1]
+          batch_arg2_mask = batch_arg2_feature.input_mask
+          arg2_mask.append(batch_arg2_mask)
+
+        # prepare bert output: [batch, total_seq_length, bert_hidden_size]
+        batch_bert_outputs = np.asarray(batch_bert_outputs)
+        total_seq_length = batch_bert_outputs.shape[1]
+        assert total_seq_length == self.hp.max_arg_length * 2, \
+          "Sequence length mismatch between BERT output and parameter"
+
+        arg1 = batch_bert_outputs[:, :self.hp.max_arg_length, :]
+        arg2 = batch_bert_outputs[:, self.hp.max_arg_length:, :]
+
+        # TODO: connectives
+        # since we don't care about connectives, make them 0 for now
+        conn = np.zeros([self.hp.batch_size,
+                         self.hp.max_arg_length,
+                         batch_bert_outputs.shape[-1]])
+
+        _, preds, loss, acc = self.sess.run(
+          [self.model.train_op, self.model.preds, self.model.loss,
+           self.model.acc],
+          feed_dict={self.model.arg1: arg1, self.model.arg2: arg2,
+                     self.model.conn: conn, self.model.label: label_ids,
+                     self.model.arg1_attn_mask: arg1_mask,
+                     self.model.arg2_attn_mask: arg2_mask})
+        c = Counter(preds)
+        for key in c.keys():
+          tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
+
+        tf.logging.info(
+          "[Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
+            iter, i+1, num_batches, loss, acc))
+
+        if self.hp.eval_every > 0 and (i + 1) % self.hp.eval_every == 0:
+          self.eval()
+
+      if self.hp.eval_every < 0:
+        # eval every end of iteration
+        self.eval()
+
   ################################### EVAL #####################################
   def eval(self):
     """See docstring for `run`"""
@@ -223,36 +244,6 @@ class DRSCExperiment(Experiment):
 
     eval_fn(examples)
 
-  def eval_from_vals(self, examples):
-    bert_outputs = self.embedding.run(examples)
-
-    # prepare bert output: [batch, total_seq_length, bert_hidden_size]
-    bert_outputs = np.asarray(bert_outputs)
-    total_seq_length = bert_outputs.shape[1]
-    assert total_seq_length == self.hp.max_arg_length * 2, \
-      "Sequence length mismatch between BERT output and parameter"
-
-    arg1 = bert_outputs[:, :self.hp.max_arg_length, :]
-    arg2 = bert_outputs[:, self.hp.max_arg_length:, :]
-
-    label_ids = []
-    for example in examples:
-      label_ids.append(self.l2i(example.label))
-
-    # connectives
-    # since we don't care about connectives, make them 0 for now
-    conn = np.zeros([self.hp.batch_size,
-                     self.hp.max_arg_length,
-                     bert_outputs.shape[-1]])
-
-    loss, preds, acc = self.sess.run(
-      [self.model.loss, self.model.preds, self.model.acc],
-      feed_dict={self.model.arg1: arg1, self.model.arg2: arg2,
-                 self.model.conn: conn, self.model.label: label_ids})
-
-    c = Counter(preds)
-    tf.logging.info("[EVAL] loss: {:.3f} acc: {:.3f} {}".format(loss, acc, c))
-
   def eval_from_ids(self, examples):
 
     examples = self.embedding.convert_to_ids(examples, self.l2i)
@@ -266,23 +257,98 @@ class DRSCExperiment(Experiment):
     c = Counter(preds)
     tf.logging.info("[EVAL] loss: {:.3f} acc: {:.3f} {}".format(loss, acc, c))
 
+  def eval_from_vals(self, examples):
+    bert_outputs = self.embedding.run(examples)
+
+    bert_outputs, exid_to_feature_mapping = bert_outputs
+
+    example_batches = self.batchify(examples, batch_size=self.hp.batch_size,
+                                    do_shuffle=False)
+    num_batches = len(example_batches)
+
+    all_correct = []
+    all_loss = []
+    all_counter = Counter()
+    for i, example_batch in enumerate(example_batches):
+      label_ids = []
+      bert_output_batch = []
+      arg1_mask, arg2_mask = [], []
+
+      for example in example_batch:
+        # arg1 and arg2
+        bert_output_batch.append(bert_outputs[example.exid])
+
+        label_ids.append(self.l2i(example.label))
+
+        exid = example.exid
+        dev_arg1_feature = exid_to_feature_mapping[exid][0]
+        dev_arg1_mask = dev_arg1_feature.input_mask
+        arg1_mask.append(dev_arg1_mask)
+
+        dev_arg2_feature = exid_to_feature_mapping[exid][1]
+        dev_arg2_mask = dev_arg2_feature.input_mask
+        arg2_mask.append(dev_arg2_mask)
+
+      # prepare bert output: [batch, total_seq_length, bert_hidden_size]
+      bert_output_batch = np.asarray(bert_output_batch)
+      total_seq_length = bert_output_batch.shape[1]
+      assert total_seq_length == self.hp.max_arg_length * 2, \
+        "Sequence length mismatch between BERT output and parameter"
+
+      arg1 = bert_output_batch[:, :self.hp.max_arg_length, :]
+      arg2 = bert_output_batch[:, self.hp.max_arg_length:, :]
+
+      # connectives
+      # since we don't care about connectives, make them 0 for now
+      conn = np.zeros([self.hp.batch_size,
+                       self.hp.max_arg_length,
+                       bert_outputs.shape[-1]])
+
+      per_example_loss, loss, preds, correct, acc = \
+        self.sess.run(
+          [self.model.per_example_loss, self.model.loss, self.model.preds,
+           self.model.correct, self.model.acc],
+          feed_dict={self.model.arg1          : arg1,
+                     self.model.arg2          : arg2,
+                     self.model.conn          : conn,
+                     self.model.label         : label_ids,
+                     self.model.arg1_attn_mask: arg1_mask,
+                     self.model.arg2_attn_mask: arg2_mask})
+
+      tf.logging.info(
+        "[EVAL Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
+          i+1, num_batches, loss, acc))
+
+      c = Counter(preds)
+      for key in c.keys():
+        tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
+      all_counter.update(c)
+
+      all_loss.extend(per_example_loss)
+      all_correct.extend(correct)
+
+    tf.logging.info("[EVAL FINAL] loss: {:.3f} acc: {:.3f}".format(
+      np.mean(all_loss), np.mean(all_correct)))
+
+    for key in all_counter.keys():
+      tf.logging.info(f" {self.labels[key]}:  {all_counter[key]}")
+
   ################################## PREDICT ###################################
   def predict(self):
     """See docstring for `run`"""
 
-    for i in range(2):
-
-      dataset_type = "test" if i==0 else "blind"
+    for dataset_type in ['test', 'blind']:
+      is_test_set = dataset_type == 'test'
 
       predict_fn = None
       if self.hp.embedding == 'bert':
-        if i==0:
+        if is_test_set:
           examples = self.processor.get_test_examples(for_bert_embedding=True)
         else:
           examples = self.processor.get_blind_examples(for_bert_embedding=True)
         predict_fn = self.predict_from_vals
       else:
-        if i==0:
+        if is_test_set:
           examples = self.processor.get_test_examples()
         else:
           examples = self.processor.get_blind_examples()
@@ -298,41 +364,6 @@ class DRSCExperiment(Experiment):
       tf.logging.info(f"Exporting test predictions at {preds_file}")
       with open(preds_file, 'w') as f:
         f.write("\n".join(preds))
-
-  def predict_from_vals(self, examples):
-    bert_outputs = self.embedding.run(examples)
-
-    # prepare bert output: [batch, total_seq_length, bert_hidden_size]
-    bert_outputs = np.asarray(bert_outputs)
-    total_seq_length = bert_outputs.shape[1]
-    assert total_seq_length == self.hp.max_arg_length * 2, \
-      "Sequence length mismatch between BERT output and parameter"
-
-    arg1 = bert_outputs[:, :self.hp.max_arg_length, :]
-    arg2 = bert_outputs[:, self.hp.max_arg_length:, :]
-
-    label_ids = []
-    for example in examples:
-      label_ids.append(self.l2i(example.label))
-
-    # connectives
-    # since we don't care about connectives, make them 0 for now
-    conn = np.zeros([self.hp.batch_size,
-                     self.hp.max_arg_length,
-                     bert_outputs.shape[-1]])
-
-    preds, acc = self.sess.run(
-      [self.model.preds, self.model.acc],
-      feed_dict={self.model.arg1: arg1, self.model.arg2: arg2,
-                 self.model.conn: conn, self.model.label: label_ids})
-
-    c = Counter(preds)
-    tf.logging.info("[PREDICT] acc: {:.3f} {}".format(acc, c))
-
-    # convert label_id preds to labels
-    preds_str = [self.i2l(pred) for pred in preds]
-
-    return preds_str
 
   def predict_from_ids(self, examples):
     self.processor.remove_cache_by_key('test')
@@ -350,4 +381,86 @@ class DRSCExperiment(Experiment):
 
     # convert label_id preds to labels
     preds_str = [self.i2l(pred) for pred in preds]
+    return preds_str
+
+  def predict_from_vals(self, examples):
+    bert_outputs = self.embedding.run(examples)
+
+    bert_outputs, exid_to_feature_mapping = bert_outputs
+
+    example_batches = self.batchify(examples, batch_size=self.hp.batch_size,
+                                    do_shuffle=False)
+    num_batches = len(example_batches)
+
+    all_correct = []
+    all_loss = []
+    all_preds = []
+    all_counter = Counter()
+
+    for i, example_batch in enumerate(example_batches):
+      label_ids = []
+      bert_output_batch = []
+      arg1_mask, arg2_mask = [], []
+      for example in example_batch:
+        # arg1 and arg2
+        bert_output_batch.append(bert_outputs[example.exid])
+
+        label_ids.append(self.l2i(example.label))
+
+        exid = example.exid
+        infer_arg1_feature = exid_to_feature_mapping[exid][0]
+        infer_arg1_mask = infer_arg1_feature.input_mask
+        arg1_mask.append(infer_arg1_mask)
+
+        infer_arg2_feature = exid_to_feature_mapping[exid][1]
+        infer_arg2_mask = infer_arg2_feature.input_mask
+        arg2_mask.append(infer_arg2_mask)
+
+      # prepare bert output: [batch, total_seq_length, bert_hidden_size]
+      bert_output_batch = np.asarray(bert_output_batch)
+      total_seq_length = bert_output_batch.shape[1]
+      assert total_seq_length == self.hp.max_arg_length * 2, \
+        "Sequence length mismatch between BERT output and parameter"
+
+      arg1 = bert_output_batch[:, :self.hp.max_arg_length, :]
+      arg2 = bert_output_batch[:, self.hp.max_arg_length:, :]
+
+      # connectives
+      # since we don't care about connectives, make them 0 for now
+      conn = np.zeros([self.hp.batch_size,
+                       self.hp.max_arg_length,
+                       bert_outputs.shape[-1]])
+
+      per_example_loss, loss, preds, correct, acc = \
+        self.sess.run(
+          [self.model.per_example_loss, self.model.loss, self.model.preds,
+           self.model.correct, self.model.acc],
+          feed_dict={self.model.arg1          : arg1,
+                     self.model.arg2          : arg2,
+                     self.model.conn          : conn,
+                     self.model.label         : label_ids,
+                     self.model.arg1_attn_mask: arg1_mask,
+                     self.model.arg2_attn_mask: arg2_mask})
+
+      tf.logging.info(
+        "[INFERENCE Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
+          i+1, num_batches, loss, acc))
+
+      c = Counter(preds)
+      for key in c.keys():
+        tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
+      all_counter.update(c)
+      all_preds.extend(preds)
+      all_loss.extend(per_example_loss)
+      all_correct.extend(correct)
+
+    tf.logging.info("[INFERENCE FINAL] loss: {:.3f} acc: {:.3f}".format(
+      np.mean(all_loss), np.mean(all_correct)))
+
+    for key in all_counter.keys():
+      tf.logging.info(f" {self.labels[key]}: {all_counter[key]}")
+
+    # convert preds to labels
+    preds_str = [self.i2l(pred) for pred in all_preds]
+
     return preds_str

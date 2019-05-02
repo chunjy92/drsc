@@ -30,6 +30,8 @@ class Experiment(ABC):
       self.processor.compile_vocab_labels()
       self.vocab = self.processor.vocab
     else:
+      # in this case vocab comes from external embedding, although self.vocab
+      # can be used to select relevant vocabs
       self.processor.compile_labels()
 
     self.labels = self.processor.labels

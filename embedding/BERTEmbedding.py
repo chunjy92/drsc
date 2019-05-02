@@ -11,12 +11,12 @@ __author__ = 'Jayeol Chun'
 
 class BERTInputFeatures(object):
   def __init__(self,
-               example_id,
+               exid,
                input_ids,
                segment_ids,
                input_mask,
                arg_type):
-    self.example_id = example_id
+    self.exid = exid
     self.input_ids = input_ids
     self.segment_ids = segment_ids
     self.input_mask = input_mask
@@ -61,20 +61,19 @@ class BERTEmbedding(object):
         "was only trained up to sequence length %d" %
         (self.max_arg_length, self.bert_config.max_position_embeddings))
 
-    # cached embedding output
-    self._cached = {}
-
-  def run(self, examples, dataset_type=None):
-    if dataset_type and dataset_type in self._cached:
-      tf.logging.info("Loading from cached output")
-      return self._cached[dataset_type]
-
+  def run(self, examples):
     features = convert_examples_to_embedding_features(
       examples, seq_length=self.max_arg_length, tokenizer=self.tokenizer)
 
-    config = tf.ConfigProto()
-    config.gpu_options.allow_growth = True
-    trainingConfig = tf.estimator.RunConfig(session_config=config)
+    # maps `example.exid` to feature used in BERTEmbedding
+    exid_to_feature = {}
+    for feature in features:
+      exid = feature.exid
+
+      if exid not in exid_to_feature:
+        exid_to_feature[exid] = [feature]
+      else:
+        exid_to_feature[exid].insert(feature.arg_type, feature)
 
     model_fn = model_fn_builder(
       bert_config=self.bert_config,
@@ -82,59 +81,37 @@ class BERTEmbedding(object):
       use_one_hot_embeddings=self.use_one_hot_embeddings
     )
 
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    runConfig = tf.estimator.RunConfig(session_config=config)
+
     estimator = tf.estimator.Estimator(model_fn=model_fn,
                                        model_dir=self.model_dir,
-                                       config=trainingConfig)
+                                       config=runConfig)
 
     input_fn = input_fn_builder(
       features=features, seq_length=self.max_arg_length,
       batch_size=self.batch_size)
 
-    tf.logging.info("Begin running BERT")
-    embedding_output_np = np.zeros(
-      [len(examples), self.max_arg_length*2,self.bert_config.hidden_size],
-      dtype=np.float
-    )
+    # for bert_output data
+    bert_outputs = np.zeros(
+      [len(examples), self.max_arg_length*2, self.bert_config.hidden_size],
+      dtype=np.float)
 
-    embed_output_dict = {}
+    tf.logging.info("Begin running BERT")
     for result in tqdm.tqdm(estimator.predict(input_fn,
                                               yield_single_examples=True)):
-      example_id = result['example_id']
+      exid = result['exid']
       arg_type = result['arg_type']
       data = np.array(result['last_layer_output'])
 
-      # if example_id in embed_output_dict:
-      #   if arg_type == 1:
-      #     # embed_output[example_id].append(data)
-      #     embed_output_dict[example_id] = \
-      #       np.concatenate([embed_output_dict[example_id], data], axis=0)
-      #   else:
-      #     embed_output_dict[example_id] = \
-      #       np.concatenate([data, embed_output_dict[example_id]], axis=0)
-      # else:
-      #   embed_output_dict[example_id] = data
-
       if arg_type == 0:
-        embedding_output_np[example_id][:self.max_arg_length] = data
+        bert_outputs[exid][:self.max_arg_length] = data
       else:
-        embedding_output_np[example_id][self.max_arg_length:] = data
+        bert_outputs[exid][self.max_arg_length:] = data
 
-    # # first element: padding instance
-    # embed_output_list = \
-    #   [np.zeros([self.max_arg_length*2, self.bert_config.hidden_size])]
-    # sorted_keys = sorted(embed_output_dict.keys())
+    return bert_outputs, exid_to_feature
 
-    # for i in sorted_keys:
-    #   d = embed_output_dict[i]
-    #   embed_output_list.append(d)
-    if dataset_type:
-      self._cached[dataset_type] = embedding_output_np
-
-    return embedding_output_np
-
-
-    # return embed_output_dict
-    # return embed_output_list
 
   def get_embedding_table(self):
     raise ValueError(
@@ -183,20 +160,18 @@ def convert_examples_to_embedding_features(examples, seq_length, tokenizer):
     assert len(input_type_ids_a) == seq_length
     assert len(input_type_ids_b) == seq_length
 
-    # example_id from ex_index
-    # example_id = ex_index
-    example_id = example.exid
+    exid = example.exid
 
     features.extend(
         [BERTInputFeatures(
-          example_id=example_id,
+          exid=exid,
           input_ids=input_ids_a,
           segment_ids=input_type_ids_a,
           input_mask=input_mask_a,
           arg_type=0
         ),
           BERTInputFeatures(
-            example_id=example_id,
+            exid=exid,
             input_ids=input_ids_b,
             segment_ids=input_type_ids_b,
             input_mask=input_mask_b,
@@ -211,7 +186,7 @@ def model_fn_builder(bert_config, init_checkpoint, use_one_hot_embeddings):
   def model_fn(features, labels, mode):  # pylint: disable=unused-argument
     """The `model_fn` for TPUEstimator."""
 
-    example_id = features['example_id']
+    exid = features['exid']
     input_ids = features["input_ids"]
     input_mask = features["input_mask"]
     segment_ids = features["segment_ids"]
@@ -246,7 +221,7 @@ def model_fn_builder(bert_config, init_checkpoint, use_one_hot_embeddings):
     last_layer_output = model.get_sequence_output()
 
     predictions = {
-      "example_id": example_id,
+      "exid": exid,
       "arg_type": arg_type,
       "last_layer_output": last_layer_output
     }
@@ -259,14 +234,14 @@ def model_fn_builder(bert_config, init_checkpoint, use_one_hot_embeddings):
 def input_fn_builder(features, seq_length, batch_size):
   """Creates an `input_fn` closure to be passed to Estimator."""
 
-  all_example_ids = []
+  all_exids = []
   all_input_ids = []
   all_input_mask = []
   all_segment_ids = []
   all_arg_types = []
 
   for feature in features:
-    all_example_ids.append(feature.example_id)
+    all_exids.append(feature.exid)
     all_input_ids.append(feature.input_ids)
     all_input_mask.append(feature.input_mask)
     all_segment_ids.append(feature.segment_ids)
@@ -281,9 +256,9 @@ def input_fn_builder(features, seq_length, batch_size):
     # not use Dataset.from_generator() because that uses tf.py_func which is
     # not TPU compatible. The right way to load data is with TFRecordReader.
     d = tf.data.Dataset.from_tensor_slices({
-        "example_id":
+        "exid":
             tf.constant(
-                all_example_ids,
+                all_exids,
                 shape=[num_examples],
                 dtype=tf.int32),
         "input_ids":
