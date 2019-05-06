@@ -361,12 +361,12 @@ class DRSCExperiment(Experiment):
     all_counter = Counter()
 
     for i, batch in enumerate(example_batches):
+      batch = self.embedding.convert_to_ids(batch, self.l2i)
       feed_dict = self.model.postprocess_batch_ids(batch)
 
       preds, correct, acc = \
         self.sess.run(
-          [self.model.per_example_loss, self.model.loss, self.model.preds,
-           self.model.correct, self.model.acc],
+          [self.model.preds, self.model.correct, self.model.acc],
           feed_dict=feed_dict)
 
       all_preds.extend(preds)
