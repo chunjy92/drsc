@@ -21,10 +21,9 @@ class PDTBRelation(object):
 
   def __repr__(self):
     if isinstance(self.arg1, list):
-
-      return f"guid: {self.guid }\tARG1: {' '.join(self.arg1)}" \
-        f"\tARg2: {' '.join(self.arg2)}\tConn: {self.conn}" \
-        f"\tLabel: {self.label}"
+      return f"guid: {self.guid }\n ARG1: {' '.join(self.arg1)}" \
+        f"\n ARG2: {' '.join(self.arg2)}\n Conn: {self.conn}" \
+        f"\n Label: {self.label}"
     else:
-      return f"guid: {self.guid}\tARG1: {self.arg1}\tARg2: {self.arg2}" \
-        f"\tConn: {self.conn}\tLabel: {self.label}"
+      return f"guid: {self.guid}\n ARG1: {self.arg1}\n ARG2: {self.arg2}" \
+        f"\n Conn: {self.conn}\n Label: {self.label}"

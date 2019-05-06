@@ -34,11 +34,16 @@ parser.add_argument(
   "--pooling_action", type=str.lower, default="sum",
   help="which pooling action to apply.")
 parser.add_argument(
-  "--do_pooling_first", type="bool", nargs="?", const=True, default=True,
+  "--do_pooling_first", type="bool", nargs="?", const=True, default=False,
   help="whether to apply pooling on word vectors (True) or on model outputs "
        "(False)")
 parser.add_argument(
-  "--conn_action", type=str.lower, help="how to handle connectives")
+  # TODO
+  "--conn_action", type=str.lower, default=None,
+  choices=const.CONN_ACTIONS, help="how to handle connectives")
+parser.add_argument(
+  "--padding_action", type=str.lower, default='normal',
+  choices=const.POOLING_ACTIONS, help="how to pad up a batch")
 parser.add_argument(
   "--use_one_hot_embeddings", type="bool", nargs="?", const=True, default=False,
   help="")
@@ -65,7 +70,7 @@ parser.add_argument(
 
 # experimental setting config
 parser.add_argument(
-  "--num_iter", type=int, default=3, help="how many iterations to train")
+  "--num_epochs", type=int, default=3, help="how many iterations to train")
 parser.add_argument(
   "--eval_every", type=int, default=100,
   help="how many batches per eval during training (-1 to disable)")
@@ -91,6 +96,9 @@ parser.add_argument(
   "--multiple_senses_action", type=str.lower, default="pick_first",
   choices=const.MULTIPLE_SENSES_ACTIONS,
   help="how to handle relations with multiple senses")
+parser.add_argument(
+  "--drop_partial_data", type="bool", nargs="?", const=True, default=False,
+  help="whether to drop partial data")
 
 # experiment control flags
 parser.add_argument(

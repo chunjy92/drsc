@@ -128,6 +128,17 @@ class MLP(object):
         name="conn")
       self.label = tf.placeholder(tf.int32, [None], name="label")
 
+      # not used but only for compatibility
+      # placehodlers for attention_mask
+      self.arg1_attn_mask = tf.placeholder(
+        tf.int32, [None, self.max_arg_length], name="arg1_attention_mask")
+      self.arg2_attn_mask = tf.placeholder(
+        tf.int32, [None, self.max_arg_length], name="arg2_attention_mask")
+
+      # for consistency
+      self.embedding_placeholder = None
+      self.embedding_table = None
+
       return self.arg1, self.arg2
     else:
       self.arg1 = tf.placeholder(tf.int32, [None, self.max_arg_length],
@@ -170,8 +181,7 @@ class MLP(object):
           output = self.build_dense_layers_single_input(combined)
 
         else:
-          raise NotImplementedError(
-            "Pooling is always applied first on word vectors")
+          raise NotImplementedError("")
       else:
         # TODO: for other sense types
         raise NotImplementedError()
@@ -188,31 +198,25 @@ class MLP(object):
       "output_bias", [self.num_labels], initializer=tf.zeros_initializer())
 
     with tf.variable_scope("loss"):
-      logits = tf.matmul(output, output_weights, transpose_b=True)
+      logits = tf.matmul(output, output_weights,
+                         transpose_b=True)
       logits = tf.nn.bias_add(logits, output_bias)
       self.preds = tf.cast(tf.argmax(logits, axis=-1), tf.int32)
 
       one_hot_labels = tf.one_hot(self.label, depth=self.num_labels,
                                   dtype=tf.float32)
 
-      self.acc = tf.reduce_mean(
-        tf.cast(tf.equal(self.preds, self.label), "float"), name="accuracy")
+      self.correct = tf.cast(tf.equal(self.preds, self.label), "float")
+      self.acc = tf.reduce_mean(self.correct, name="accuracy")
 
       self.per_example_loss = tf.nn.softmax_cross_entropy_with_logits_v2(
         labels=one_hot_labels,
-        logits=logits
-      )
+        logits=logits)
       loss = tf.reduce_mean(self.per_example_loss)
 
       reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
       reg_constant = 0.01
       self.loss = loss + reg_constant * tf.reduce_sum(reg_losses)
-
-      # probabilities = tf.nn.softmax(logits, axis=-1)
-      # log_probs = tf.nn.log_softmax(logits, axis=-1)
-      #
-      # per_example_loss = -tf.reduce_sum(tf.cast(self.label, tf.float32) * log_probs, axis=-1)
-      # self.loss = tf.reduce_mean(per_example_loss)
 
     optimizer = get_optimizer(self.optimizer)
     self.train_op = optimizer(self.learning_rate).minimize(self.loss)

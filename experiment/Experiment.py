@@ -21,20 +21,30 @@ class Experiment(ABC):
       do_lower_case=self.hp.do_lower_case,
       sense_type=self.hp.sense_type,
       sense_level=self.hp.sense_level,
-      multiple_senses_action=self.hp.multiple_senses_action
+      multiple_senses_action=self.hp.multiple_senses_action,
+      padding_action=self.hp.padding_action,
+      drop_partial_data=self.hp.drop_partial_data
     )
 
     self.vocab = None
     if not self.hp.embedding:
       # if no embedding is specified, need to collect vocab from training set
-      self.processor.compile_vocab_labels()
+      # DEPRECATED
+      # self.processor.compile_vocab_labels()
+
+      self.processor.compile_vocab()
       self.vocab = self.processor.vocab
     else:
       # in this case vocab comes from external embedding, although self.vocab
       # can be used to select relevant vocabs
-      self.processor.compile_labels()
+
+      # DEPRECATED
+      # self.processor.compile_labels()
+      pass
 
     self.labels = self.processor.labels
+
+    tf.logging.info(f"All {len(self.labels)} Labels: {self.labels}")
 
     # label to index
     self.l2i = lambda l: self.labels.index(l)

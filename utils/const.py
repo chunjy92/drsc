@@ -34,9 +34,12 @@ EMBEDDINGS = ['bert',
               'glove.42B.300d', # uncased
               'glove.840B.300d', # cased
               'googlenews']
-TRUNC_MODES = ['normal', 'reverse']
-POOLING_ACTIONS = ['sum', 'mean', 'max', 'concat', 'matmul'] # concat?
+TRUNC_MODES = ['normal', 'reverse', 'reverse_arg1', 'reverse_arg2']
+POOLING_ACTIONS = ['sum', 'mean', 'max', 'concat', 'matmul',
+                   # second line applies to `Attentional` model only
+                   'first_cls', 'second_cls', 'new_cls']
 CONN_ACTIONS = []
+PADDING_ACTIONS = ['normal', 'pad_left_arg1']
 OPTIMIZERS = ['sgd', 'adam', 'adagrad']
 SENSE_TYPES = ['all', 'implicit', 'non-explicit', 'explicit']
 MULTIPLE_SENSES_ACTIONS = ['pick_first', 'duplicate']
@@ -64,3 +67,31 @@ WORDS = 'words'
 # data.json and parse.json alignment
 SENT_ID = -2 # == 3
 TOK_ID = -1 # == 4
+
+
+# List of senses
+IMPLICIT_11_WAY = [
+  # 2 Comparisons
+  'Comparison.Concession',
+  'Comparison.Contrast',
+  # 2 Contingencies
+  'Contingency.Cause',
+  'Contingency.Condition',
+  # 5 Expansions
+  'Expansion.Alternative',
+  'Expansion.Conjunction',
+  'Expansion.Exception',
+  'Expansion.Instantiation',
+  'Expansion.Restatement',
+  # 2 Temporals
+  'Temporal.Synchrony',
+  'Temporal.Asynchronous'
+]
+
+# 11_WAY + first-level senses
+IMPLICIT_15_WAY = IMPLICIT_11_WAY + [
+  'Comparison',
+  'Contingency',
+  'Expansion',
+  'Temporal'
+]

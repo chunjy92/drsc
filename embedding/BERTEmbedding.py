@@ -3,6 +3,7 @@
 import numpy as np
 import tensorflow as tf
 import tqdm
+import pickle
 
 from bert import modeling, tokenization
 
@@ -61,7 +62,11 @@ class BERTEmbedding(object):
         "was only trained up to sequence length %d" %
         (self.max_arg_length, self.bert_config.max_position_embeddings))
 
-  def run(self, examples):
+  def run(self, examples, filename=None):
+    if filename:
+      with open(filename, 'rb') as f:
+        return pickle.load(f)
+
     features = convert_examples_to_embedding_features(
       examples, seq_length=self.max_arg_length, tokenizer=self.tokenizer)
 
@@ -109,6 +114,11 @@ class BERTEmbedding(object):
         bert_outputs[exid][:self.max_arg_length] = data
       else:
         bert_outputs[exid][self.max_arg_length:] = data
+
+    if filename:
+      with open(filename, 'wb') as f:
+        pickle.dump((bert_outputs, exid_to_feature), f,
+                    protocol=pickle.HIGHEST_PROTOCOL)
 
     return bert_outputs, exid_to_feature
 

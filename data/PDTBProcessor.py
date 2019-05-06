@@ -26,7 +26,9 @@ class PDTBProcessor(object):
                do_lower_case=False,
                sense_type='implicit',
                sense_level=2,
-               multiple_senses_action="pick_first"):
+               multiple_senses_action="pick_first",
+               padding_action="normal",
+               drop_partial_data=False):
     # root data dir
     self.data_dir = data_dir
 
@@ -34,6 +36,8 @@ class PDTBProcessor(object):
     self.sense_type = sense_type
     self.sense_level = sense_level
     self.multiple_senses_action = multiple_senses_action
+    self.padding_action = padding_action
+    self.drop_partial_data = drop_partial_data
 
     # preprocessing config
     self.max_arg_length = max_arg_length
@@ -43,6 +47,15 @@ class PDTBProcessor(object):
     # set of vocab and labels
     self._vocab = None
     self._labels = None
+
+    # assume `implicit`
+    assert self.sense_type == "implicit", \
+      "Currently only supports implicit relation types"
+
+    if self.drop_partial_data:
+      self._labels = const.IMPLICIT_11_WAY
+    else:
+      self._labels = const.IMPLICIT_15_WAY
 
     # cached data
     self._cached = {}
@@ -62,7 +75,10 @@ class PDTBProcessor(object):
   def collect_all_vocab(self, include_blind=False):
     vocab = self.vocab
     if not vocab:
-      self.compile_vocab_labels()
+      # DEPRECATED
+      # self.compile_vocab_labels()
+
+      self.compile_vocab()
       vocab = self.vocab
 
     vocab = set(vocab)
@@ -84,36 +100,63 @@ class PDTBProcessor(object):
 
     return list(vocab)
 
-  def compile_labels(self, instances=None):
-    """Collects unique label set from given instances (defaults to training
-    instances)"""
+  def compile_vocab(self, instances=None):
+    """Collects unique vocab from training instances"""
     if not instances:
-      tf.logging.info("Compiling labels from training set")
-      instances = self.get_train_examples()
-      self.remove_cache_by_key("train")
-
-    labels = set()
-    for instance in instances:
-      labels.add(instance.label)
-
-    self._labels = sorted(labels)
-
-  def compile_vocab_labels(self, instances=None):
-    """Collects unique vocab and label set from training instances"""
-    if not instances:
-      tf.logging.info("Compiling vocab and labels from training set")
+      tf.logging.info("Compiling vocab from training set")
       self._cached['train'] = instances = self.get_train_examples()
 
-    vocab, labels = set(), set()
+    vocab = set()
     for instance in instances:
       vocab.update(instance.arg1)
       vocab.update(instance.arg2)
       if instance.conn: # connective may not exist
         vocab.update(instance.conn)
-      labels.update(instance.label_list)
 
     self._vocab = sorted(vocab)
-    self._labels = sorted(labels)
+
+  # DEPRECATED
+  def compile_labels(self, instances=None):
+    """DEPRECATED in favor of pre-defined list of labels"""
+    tf.logging.warn(
+      "`compile_labels deprecated in favor of pre-defined list of labels in "
+      "`const.py`", DeprecationWarning)
+
+    # """Collects unique label set from given instances (defaults to training
+    # instances)"""
+    # if not instances:
+    #   tf.logging.info("Compiling labels from training set")
+    #   instances = self.get_train_examples()
+    #   self.remove_cache_by_key("train")
+    #
+    # labels = set()
+    # for instance in instances:
+    #   labels.add(instance.label)
+    #
+    # self._labels = sorted(labels)
+
+  # DEPRECATED
+  def compile_vocab_labels(self, instances=None):
+    """Collects unique vocab and label set from training instances"""
+    tf.logging.warn(
+      "`compile_labels deprecated in favor of pre-defined list of labels in "
+      "`const.py`", DeprecationWarning)
+    return self.compile_vocab(instances=instances)
+
+    # if not instances:
+    #   tf.logging.info("Compiling vocab and labels from training set")
+    #   self._cached['train'] = instances = self.get_train_examples()
+    #
+    # vocab, labels = set(), set()
+    # for instance in instances:
+    #   vocab.update(instance.arg1)
+    #   vocab.update(instance.arg2)
+    #   if instance.conn: # connective may not exist
+    #     vocab.update(instance.conn)
+    #   labels.update(instance.label_list)
+    #
+    # self._vocab = sorted(vocab)
+    # self._labels = sorted(labels)
 
   def get_train_examples(self, rel_filename=None, parse_filename=None,
                          for_bert_embedding=False):
@@ -177,8 +220,6 @@ class PDTBProcessor(object):
     pdtb = codecs.open(rel_filename, encoding='utf-8')
     parse = json.load(codecs.open(parse_filename, encoding='utf8'))
 
-    # TODO: is `exid` this really necessary?
-    #  Originally for BERTEmbedding lookup indexing
     exid = 0
     examples = []
     for i, pdtb_line in enumerate(pdtb):
@@ -187,7 +228,8 @@ class PDTBProcessor(object):
       # relation identifier
       doc_id = rel[const.DOC_ID]
       unique_id = rel[const.REL_ID]
-      guid = f"{dataset_type}-{doc_id}-{unique_id}"
+      # guid = f"{dataset_type}-{doc_id}-{unique_id}"
+      guid = f"{dataset_type}-{unique_id}"
 
       rel_type = rel[const.TYPE].lower()
       if self.sense_type != "all" and rel_type != self.sense_type:
@@ -217,7 +259,7 @@ class PDTBProcessor(object):
           if self.truncation_mode == 'normal':
             tokens = tokens[:self.max_arg_length]
           elif self.truncation_mode == 'reverse':
-            tokens = tokens[::-1][:self.max_arg_length]
+            tokens = tokens[-self.max_arg_length:]
           else:
             raise NotImplementedError()
 
@@ -227,34 +269,58 @@ class PDTBProcessor(object):
           else:
             # if less than max_arg_length, pad up with _PAD_
             num_pad = self.max_arg_length - len(tokens)
-            tokens += [const.PAD] * num_pad
+
+            if self.padding_action == "pad_left_arg1" and i==0:
+              # pad at the beginning of tokens for arg1
+              tokens = [const.PAD] * num_pad + tokens
+            else:
+              # pad at the end of tokens
+              tokens += [const.PAD] * num_pad
 
           tok_data[i] = tokens
 
       arg1, arg2, conn = tok_data
 
       sense_list = rel[const.SENSE]
-      for i,sense in enumerate(sense_list):
-        sense_list[i] = to_level(sense, level=self.sense_level)
+
+      # change to to_desired level
+      # for i,sense in enumerate(sense_list):
+      #   sense_list[i] = to_level(sense, level=self.sense_level)
 
       if self.multiple_senses_action == "pick_first":
         sense = sense_list[0]
+        sense = to_level(sense, level=self.sense_level)
+        # sense_level = get_level(sense)
+
+        # if self.drop_partial_data and sense_level != self.sense_level:
+        #   continue
+
+        # TODO: Only if dataset is `implicit`. Needs an update later for other
+        #  dataset types or somehow make them compatible with this
+        #  implementation
+        if sense not in self.labels:
+          continue
 
         if rel_type == self.sense_type or self.sense_type == 'all':
           input_example = PDTBRelation(
             guid=guid, exid=exid, arg1=arg1, arg2=arg2, conn=conn, label=sense,
             label_list=sense_list)
           examples.append(input_example)
+          if exid < 10 and dataset_type=='train':
+            tf.logging.info(input_example)
           exid += 1
 
       elif self.multiple_senses_action == "duplicate":
-        for sense in sense_list:
-          if rel_type == self.sense_type or self.sense_type == 'all':
-            input_example = PDTBRelation(
-              guid=guid, exid=exid, arg1=arg1, arg2=arg2, conn=conn,
-              label=sense, label_list=sense_list)
-            examples.append(input_example)
-            exid += 1
+        raise NotImplementedError()
+        # for sense in sense_list:
+        #   if rel_type == self.sense_type or self.sense_type == 'all':
+        #     input_example = PDTBRelation(
+        #       guid=guid, exid=exid, arg1=arg1, arg2=arg2, conn=conn,
+        #       label=sense, label_list=sense_list)
+        #     examples.append(input_example)
+        #     if exid < 10 and dataset_type=='train':
+        #       tf.logging.info(input_example)
+        #     exid += 1
 
       else: # smart picking by majority (?)
         raise NotImplementedError()

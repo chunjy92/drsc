@@ -47,10 +47,15 @@ class DRSCExperiment(Experiment):
 
       self.embedding = Embedding(embedding=self.hp.embedding,
                                  vocab=vocab,
+                                 word_vector_width=self.hp.word_vector_width,
                                  max_arg_length=self.hp.max_arg_length)
 
       self.embedding_table = self.embedding.get_embedding_table()
       self.embedding_shape = self.embedding_table.shape
+
+      # if self.hp.word_vector_width != self.hp.hidden_size:
+      #   # hidden_size
+      #   pass
 
   def init_model(self):
     if self.hp.model == "mlp":
@@ -79,10 +84,13 @@ class DRSCExperiment(Experiment):
         num_hidden_layers=self.hp.num_hidden_layers,
         num_attention_heads=self.hp.num_attention_heads,
         learning_rate=self.hp.learning_rate,
+        embedding=self.hp.embedding,
+        embedding_shape=self.embedding_shape,
         optimizer=self.hp.optimizer,
         sense_type=self.hp.sense_type,
         pooling_action=self.hp.pooling_action,
-        do_pooling_first=self.hp.do_pooling_first
+        do_pooling_first=self.hp.do_pooling_first,
+        do_finetune_embedding=self.hp.do_finetune_embedding
       )
 
   ################################### TRAIN ####################################
@@ -121,7 +129,7 @@ class DRSCExperiment(Experiment):
       [self.init, self.model.embedding_init_op],
       feed_dict={self.model.embedding_placeholder: self.embedding_table})
 
-    for iter in range(self.hp.num_iter):
+    for iter in range(self.hp.num_epochs):
       feat_batches = self.batchify(examples, batch_size=self.hp.batch_size,
                                    do_shuffle=True)
       num_batches = len(feat_batches)
@@ -129,13 +137,36 @@ class DRSCExperiment(Experiment):
 
       processed_batches = 0
       for i, batch in enumerate(feat_batches):
-        batch = self.embedding.convert_to_ids(batch, self.l2i)
+        batch_ids = self.embedding.convert_to_ids(batch, self.l2i)
+        arg1, arg2, conn, label_ids = batch_ids
 
-        arg1, arg2, conn, label_ids = batch
+        arg1_mask = []
+        arg2_mask = []
+        for batch_example in batch:
+          batch_example_arg1 = batch_example.arg1
+          batch_example_arg1_mask = []
+          for arg1_token in batch_example_arg1:
+            if arg1_token == const.PAD:
+              batch_example_arg1_mask.append(0)
+            else:
+              batch_example_arg1_mask.append(1)
+          arg1_mask.append(batch_example_arg1_mask)
+
+          batch_example_arg2 = batch_example.arg2
+          batch_example_arg2_mask = []
+          for arg2_token in batch_example_arg2:
+            if arg2_token == const.PAD:
+              batch_example_arg2_mask.append(0)
+            else:
+              batch_example_arg2_mask.append(1)
+          arg2_mask.append(batch_example_arg2_mask)
+
         _, preds, loss, acc = self.sess.run(
           [self.model.train_op, self.model.preds, self.model.loss, self.model.acc],
           feed_dict={self.model.arg1: arg1, self.model.arg2: arg2,
-                     self.model.conn: conn, self.model.label: label_ids})
+                     self.model.conn: conn, self.model.label: label_ids,
+                     self.model.arg1_attn_mask: arg1_mask,
+                     self.model.arg2_attn_mask: arg2_mask})
         c = Counter(preds)
         for key in c.keys():
           tf.logging.info(self.labels[key])
@@ -164,7 +195,7 @@ class DRSCExperiment(Experiment):
 
     self.sess.run(self.init)
 
-    for iter in range(self.hp.num_iter):
+    for iter in range(self.hp.num_epochs):
       bert_batches = self.batchify(bert_examples_pair,
                                    batch_size=self.hp.batch_size,
                                    do_shuffle=True)
@@ -220,7 +251,7 @@ class DRSCExperiment(Experiment):
           tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
 
         tf.logging.info(
-          "[Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
+          "[TRAIN Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
             iter, i+1, num_batches, loss, acc))
 
         if self.hp.eval_every > 0 and (i + 1) % self.hp.eval_every == 0:
@@ -246,16 +277,41 @@ class DRSCExperiment(Experiment):
 
   def eval_from_ids(self, examples):
 
-    examples = self.embedding.convert_to_ids(examples, self.l2i)
-    arg1, arg2, conn, label = examples
+    example_ids = self.embedding.convert_to_ids(examples, self.l2i)
+    arg1, arg2, conn, label = example_ids
+
+    arg1_mask = []
+    arg2_mask = []
+    for example in examples:
+      example_arg1 = example.arg1
+      example_arg1_mask = []
+      for arg1_token in example_arg1:
+        if arg1_token == const.PAD:
+          example_arg1_mask.append(0)
+        else:
+          example_arg1_mask.append(1)
+      arg1_mask.append(example_arg1_mask)
+
+      example_arg2 = example.arg2
+      example_arg2_mask = []
+      for arg2_token in example_arg2:
+        if arg2_token == const.PAD:
+          example_arg2_mask.append(0)
+        else:
+          example_arg2_mask.append(1)
+      arg2_mask.append(example_arg2_mask)
 
     loss, preds, acc = self.sess.run(
       [self.model.loss, self.model.preds, self.model.acc],
       feed_dict={self.model.arg1: arg1, self.model.arg2: arg2,
-                 self.model.conn: conn, self.model.label: label})
+                 self.model.conn: conn, self.model.label: label,
+                 self.model.arg1_attn_mask: arg1_mask,
+                 self.model.arg2_attn_mask: arg2_mask})
 
+    tf.logging.info("[EVAL] loss: {:.3f} acc: {:.3f}".format(loss, acc))
     c = Counter(preds)
-    tf.logging.info("[EVAL] loss: {:.3f} acc: {:.3f} {}".format(loss, acc, c))
+    for key in c.keys():
+      tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
 
   def eval_from_vals(self, examples):
     bert_outputs = self.embedding.run(examples)
@@ -331,7 +387,7 @@ class DRSCExperiment(Experiment):
       np.mean(all_loss), np.mean(all_correct)))
 
     for key in all_counter.keys():
-      tf.logging.info(f" {self.labels[key]}:  {all_counter[key]}")
+      tf.logging.info(" {:3d}: {}".format(all_counter[key], self.labels[key]))
 
   ################################## PREDICT ###################################
   def predict(self):
@@ -356,16 +412,16 @@ class DRSCExperiment(Experiment):
 
       tf.logging.info(f"Inference on {dataset_type} set")
       self.processor.remove_cache_by_key(dataset_type)
-      preds = predict_fn(examples)
+      preds = predict_fn(examples, is_test_set=is_test_set)
 
       preds_file = \
         os.path.join(self.hp.model_dir, f"{dataset_type}_predictions.txt")
 
-      tf.logging.info(f"Exporting test predictions at {preds_file}")
+      tf.logging.info(f"Exporting {dataset_type} predictions at {preds_file}")
       with open(preds_file, 'w') as f:
         f.write("\n".join(preds))
 
-  def predict_from_ids(self, examples):
+  def predict_from_ids(self, examples, is_test_set=False):
     self.processor.remove_cache_by_key('test')
 
     examples = self.embedding.convert_to_ids(examples, self.l2i)
@@ -383,7 +439,12 @@ class DRSCExperiment(Experiment):
     preds_str = [self.i2l(pred) for pred in preds]
     return preds_str
 
-  def predict_from_vals(self, examples):
+  def predict_from_vals(self, examples, is_test_set=False):
+    if is_test_set:
+      dataset_type = "test"
+    else:
+      dataset_type = "blind"
+
     bert_outputs = self.embedding.run(examples)
 
     bert_outputs, exid_to_feature_mapping = bert_outputs
@@ -443,8 +504,8 @@ class DRSCExperiment(Experiment):
                      self.model.arg2_attn_mask: arg2_mask})
 
       tf.logging.info(
-        "[INFERENCE Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
-          i+1, num_batches, loss, acc))
+        "[{} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
+          dataset_type.upper(), i+1, num_batches, loss, acc))
 
       c = Counter(preds)
       for key in c.keys():
@@ -454,8 +515,8 @@ class DRSCExperiment(Experiment):
       all_loss.extend(per_example_loss)
       all_correct.extend(correct)
 
-    tf.logging.info("[INFERENCE FINAL] loss: {:.3f} acc: {:.3f}".format(
-      np.mean(all_loss), np.mean(all_correct)))
+    tf.logging.info("[{} FINAL] loss: {:.3f} acc: {:.3f}".format(
+      dataset_type.upper(), np.mean(all_loss), np.mean(all_correct)))
 
     for key in all_counter.keys():
       tf.logging.info(f" {self.labels[key]}: {all_counter[key]}")

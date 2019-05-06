@@ -221,7 +221,9 @@ class DRSCProcessor(DataProcessor):
     train_ = self._proc.get_train_examples()
     dev_ = self._proc.get_dev_examples()
     test_ = self._proc.get_test_examples()
-    self._proc.compile_vocab_labels(train_+dev_+test_)
+    # DEPRECATED
+    # self._proc.compile_vocab_labels(train_+dev_+test_)
+    self._proc.compile_vocab(train_+dev_+test_)
 
     self._data_type = data_type
     self._sense_path = sense_path
@@ -237,6 +239,9 @@ class DRSCProcessor(DataProcessor):
 
   def get_test_examples(self, data_dir):
     return self.from_pdtb_proc(self._proc.get_test_examples())
+
+  def get_blind_examples(self, data_dir):
+    return self.from_pdtb_proc(self._proc.get_blind_examples())
 
   def from_pdtb_proc(self, examples):
     # PDTBRelation

@@ -17,21 +17,27 @@ class Attentional(object):
                num_attention_heads=8,
                hidden_dropout_prob=0.1,
                learning_rate=3e-4,
+               embedding=None,
+               embedding_shape=None,
                optimizer='adam',
                attention_type="self_attn",
                sense_type='implicit',
-               pooling_action='sum',
+               pooling_action='concat',
                conn_action=None,
                do_pooling_first=False,
+               do_finetune_embedding=False,
                scope=None):
     # model architecture will slightly vary depending on combinations of:
     # [dataset_type, pooling_action, conn_action]
     self.attention_type = attention_type
     self.sense_type = sense_type  # see const.DATASET_TYPES
     self.pooling_action = pooling_action  # see const.POOLING_ACTIONS
+    self.embedding = embedding
+    self.embedding_shape = embedding_shape
 
     self.pooling_action = pooling_action
     self.do_pooling_first = do_pooling_first
+    self.do_finetune_embedding = do_finetune_embedding
 
     self.conn_action = conn_action  # see const.CONN_ACTIONS
 
@@ -51,7 +57,12 @@ class Attentional(object):
     self.labels = labels
     self.num_labels = len(self.labels)
 
+    # for consistency
+    # self.embedding_init_op = None
+    # self.embedding_placeholder = None
+
     self.build(scope)
+    # self.saver = tf.train.Saver()
 
   def build_attn_layer(self,
                        input_tensor,
@@ -261,7 +272,7 @@ class Attentional(object):
   def encode_concat_context(self,
                             input_tensor,
                             segment_ids,
-                            segment_vocab_size=2,
+                            segment_vocab_size=16,
                             max_position_embeddings=512,
                             initializer_range=0.02,
                             use_segment_ids=False,
@@ -320,8 +331,18 @@ class Attentional(object):
     output = modeling.layer_norm_and_dropout(output, self.hidden_dropout_prob)
     return output
 
-  def build(self, scope=None):
-    with tf.variable_scope(scope, default_name="attentional_model"):
+  def init_embedding(self, placeholder):
+    embedding_table = tf.get_variable(
+      name="embedding_table",
+      shape=self.embedding_shape,
+      trainable=self.do_finetune_embedding
+    )
+
+    self.embedding_init_op = embedding_table.assign(placeholder)
+    return embedding_table
+
+  def build_input_pipeline(self):
+    if self.embedding == 'bert':
       self.arg1 = tf.placeholder(
         tf.float32, [None, self.max_arg_length, self.word_vector_width],
         name="arg1")
@@ -335,13 +356,40 @@ class Attentional(object):
         tf.float32, [None, self.max_arg_length, self.word_vector_width],
         name="conn")
 
+    else:
+      self.arg1 = tf.placeholder(tf.int32, [None, self.max_arg_length],
+                                 name="arg1")
+      self.arg2 = tf.placeholder(tf.int32, [None, self.max_arg_length],
+                                 name="arg2")
+      # TODO: max_len for conn???
+      self.conn = tf.placeholder(tf.int32, [None, self.max_arg_length],
+                                 name="conn")
+      self.label = tf.placeholder(tf.int32, [None], name="label")
+
+      self.embedding_placeholder = \
+        tf.placeholder(tf.float32, self.embedding_shape,
+                       "embedding_placeholder")
+
+      self.embedding_table = self.init_embedding(self.embedding_placeholder)
+
+      # embedding lookup
+      with tf.variable_scope("embedding"):
+        arg1 = tf.nn.embedding_lookup(self.embedding_table, self.arg1)
+        arg2 = tf.nn.embedding_lookup(self.embedding_table, self.arg2)
+
+      return arg1, arg2
+
+  def build(self, scope=None):
+    with tf.variable_scope(scope, default_name="attentional_model"):
+      arg1, arg2 = self.build_input_pipeline()
+
       # placehodlers for attention_mask
       self.arg1_attn_mask = tf.placeholder(
         tf.int32, [None, self.max_arg_length], name="arg1_attention_mask")
       self.arg2_attn_mask = tf.placeholder(
         tf.int32, [None, self.max_arg_length], name="arg2_attention_mask")
 
-      arg_concat = tf.concat([self.arg1, self.arg2], axis=1)
+      arg_concat = tf.concat([arg1, arg2], axis=1)
       mask_concat = tf.concat([self.arg1_attn_mask, self.arg2_attn_mask],
                               axis=1)
 
@@ -364,11 +412,36 @@ class Attentional(object):
       self.sequence_output = self.all_encoder_layers[-1]
 
       with tf.variable_scope("pooler"):
-        # We "pool" the model by simply taking the hidden state corresponding
-        # to the first token. We assume that this has been pre-trained
-        first_token_tensor = tf.squeeze(self.sequence_output[:, 0:1, :], axis=1)
+        # see `POOLING_ACTIONS` defined in `const.py`
+        pooling_tensor = None
+
+        first_cls = tf.squeeze(self.sequence_output[:, 0:1, :], axis=1)
+        second_cls = tf.squeeze(
+          self.sequence_output[:,self.max_arg_length:self.max_arg_length+1,:],
+          axis=1)
+
+        if self.pooling_action == "first_cls":
+          pooling_tensor = first_cls
+        elif self.pooling_action == "second_cls":
+          pooling_tensor = second_cls
+        elif self.pooling_action == 'concat':
+          pooling_tensor = tf.concat([first_cls, second_cls], axis=-1)
+        elif self.pooling_action == 'new_cls':
+          # TODO: requires re-structuring
+          raise NotImplementedError()
+        elif self.pooling_action == "sum":
+          pooling_tensor = tf.reduce_sum([first_cls, second_cls], axis=0)
+        elif self.pooling_action == 'mean':
+          pooling_tensor = tf.reduce_mean([first_cls, second_cls], axis=0)
+        elif self.pooling_action == "max":
+          pooling_tensor = tf.reduce_max([first_cls, second_cls], axis=0)
+        elif self.pooling_action == "matmul":
+          pooling_tensor = tf.multiply(first_cls, second_cls)
+        else:
+          raise ValueError("Pooling action not understood")
+
         self.pooled_output = tf.layers.dense(
-            first_token_tensor,
+            pooling_tensor,
             self.hidden_size,
             activation=tf.tanh,
             kernel_initializer=modeling.create_initializer())
@@ -397,14 +470,12 @@ class Attentional(object):
 
         self.per_example_loss = tf.nn.softmax_cross_entropy_with_logits_v2(
           labels=one_hot_labels,
-          logits=logits
-        )
+          logits=logits)
         self.loss = tf.reduce_mean(self.per_example_loss)
 
         # reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
         # reg_constant = 0.01
         # self.loss = loss + reg_constant * tf.reduce_sum(reg_losses)
-
 
       optimizer = get_optimizer(self.optimizer)
       self.train_op = optimizer(self.learning_rate).minimize(self.loss)
@@ -420,6 +491,16 @@ class Attentional(object):
 
   def get_all_encoder_layers(self):
     return self.all_encoder_layers
+
+  def train(self, examples, sess):
+    pass
+
+  def eval(self, examples, sess):
+    pass
+
+  def test(self, examples, sess):
+    pass
+
 
 def get_optimizer(optimizer):
   if optimizer=="adam":
