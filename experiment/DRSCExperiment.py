@@ -147,8 +147,8 @@ class DRSCExperiment(Experiment):
       tf.logging.info(f"Created {num_batches} batches.")
 
       for i, batch in enumerate(feat_batches):
-        batch_ids = self.embedding.convert_to_ids(batch, self.l2i)
-        feed_dict = self.model.postprocess_batch_ids(batch_ids)
+        batch = self.embedding.convert_to_ids(batch, self.l2i)
+        feed_dict = self.model.postprocess_batch_ids(batch)
 
         _, preds, loss, acc = self.sess.run(
           [self.model.train_op, self.model.preds, self.model.loss,
@@ -220,20 +220,45 @@ class DRSCExperiment(Experiment):
     eval_fn(examples)
 
   def eval_from_ids(self, examples):
-    # we treat entire dev set as if it's a single batch
-    # TODO (May 5): This may not work when jointly fine-tuning BERT later.
-    example_ids = self.embedding.convert_to_ids(examples, self.l2i)
-    feed_dict = self.model.postprocess_batch_ids(example_ids)
 
-    loss, preds, acc = self.sess.run(
-      [self.model.loss, self.model.preds, self.model.acc],
-      feed_dict=feed_dict)
+    example_batches = self.batchify(examples,
+                                    batch_size=self.hp.batch_size,
+                                    do_shuffle=False)
+    num_batches = len(example_batches)
+    tf.logging.info(f"Created {num_batches} batches.")
 
-    c = Counter(preds)
-    for key in c.keys():
-      tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
+    all_correct = []
+    all_loss = []
+    all_counter = Counter()
 
-    tf.logging.info("[EVAL] loss: {:.3f} acc: {:.3f}".format(loss, acc))
+    for i, batch in enumerate(example_batches):
+      batch = self.embedding.convert_to_ids(batch, self.l2i)
+      feed_dict = self.model.postprocess_batch_ids(batch)
+
+      per_example_loss, loss, preds, correct, acc = \
+        self.sess.run(
+          [self.model.per_example_loss, self.model.loss, self.model.preds,
+           self.model.correct, self.model.acc], feed_dict=feed_dict)
+
+      # accumulate losses and prediction evaluation
+      all_loss.extend(per_example_loss)
+      all_correct.extend(correct)
+
+      c = Counter(preds)
+      all_counter.update(c)
+      for key in c.keys():
+        tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
+
+      tf.logging.info(
+        "[EVAL Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
+          i + 1, num_batches, loss, acc))
+
+    tf.logging.info("[EVAL FINAL] loss: {:.3f} acc: {:.3f}".format(
+      np.mean(all_loss), np.mean(all_correct)))
+
+    # all pred outputs for dev set
+    for key in all_counter.keys():
+      tf.logging.info(" {:3d}: {}".format(all_counter[key], self.labels[key]))
 
   def eval_from_vals(self, examples):
     embedding_res = self.embedding.run(examples)
@@ -315,40 +340,55 @@ class DRSCExperiment(Experiment):
       self.processor.remove_cache_by_key(dataset_type)
 
       preds = predict_fn(examples, is_test_set=is_test_set)
-
       res[dataset_type] = preds
-
-      # preds_file = \
-      #   os.path.join(self.hp.model_dir, f"{dataset_type}_predictions.txt")
-      #
-      # tf.logging.info(f"Exporting {dataset_type} predictions at {preds_file}")
-      # with open(preds_file, 'w') as f:
-      #   f.write("\n".join(preds))
 
     return res
 
   def predict_from_ids(self, examples, is_test_set=False):
-    self.processor.remove_cache_by_key('test')
-
     if is_test_set:
       dataset_type = "test"
     else:
       dataset_type = "blind"
 
-    example_ids = self.embedding.convert_to_ids(examples, self.l2i)
-    feed_dict = self.model.postprocess_batch_ids(example_ids)
+    example_batches = self.batchify(examples,
+                                    batch_size=self.hp.batch_size,
+                                    do_shuffle=False)
+    num_batches = len(example_batches)
+    tf.logging.info(f"Created {num_batches} batches.")
 
-    preds, acc = self.sess.run([self.model.preds, self.model.acc],
-                               feed_dict=feed_dict)
+    all_correct = []
+    all_preds = []
+    all_counter = Counter()
 
-    c = Counter(preds)
-    for key in c.keys():
-      tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
+    for i, batch in enumerate(example_batches):
+      feed_dict = self.model.postprocess_batch_ids(batch)
 
-    tf.logging.info("[{}] acc: {:.3f}".format(dataset_type.upper(), acc))
+      preds, correct, acc = \
+        self.sess.run(
+          [self.model.per_example_loss, self.model.loss, self.model.preds,
+           self.model.correct, self.model.acc],
+          feed_dict=feed_dict)
+
+      all_preds.extend(preds)
+      all_correct.extend(correct)
+
+      c = Counter(preds)
+      all_counter.update(c)
+      for key in c.keys():
+        tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
+
+      tf.logging.info(
+        "[{} Batch {}/{}] acc: {:.3f}".format(
+          dataset_type.upper(), i + 1, num_batches, acc))
+
+    tf.logging.info("[{} FINAL] acc: {:.3f}".format(
+      dataset_type.upper(), np.mean(all_correct)))
+
+    for key in all_counter.keys():
+      tf.logging.info(f" {self.labels[key]}: {all_counter[key]}")
 
     # convert label_id preds to labels
-    preds_str = [self.i2l(pred) for pred in preds]
+    preds_str = [self.i2l(pred) for pred in all_preds]
     return preds_str
 
   def predict_from_vals(self, examples, is_test_set=False):
@@ -367,7 +407,6 @@ class DRSCExperiment(Experiment):
     tf.logging.info(f"Created {num_batches} batches.")
 
     all_correct = []
-    all_loss = []
     all_preds = []
     all_counter = Counter()
 
@@ -376,14 +415,11 @@ class DRSCExperiment(Experiment):
         batch, values=bert_outputs, l2i_mapping=self.l2i,
         exid_to_feature_mapping=exid_to_feature_mapping)
 
-      per_example_loss, loss, preds, correct, acc = \
-        self.sess.run(
-          [self.model.per_example_loss, self.model.loss, self.model.preds,
-           self.model.correct, self.model.acc],
-          feed_dict=feed_dict)
+      preds, correct, acc = self.sess.run(
+        [self.model.preds, self.model.correct, self.model.acc],
+        feed_dict=feed_dict)
 
       all_preds.extend(preds)
-      all_loss.extend(per_example_loss)
       all_correct.extend(correct)
 
       c = Counter(preds)
@@ -392,11 +428,11 @@ class DRSCExperiment(Experiment):
         tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
 
       tf.logging.info(
-        "[{} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
-          dataset_type.upper(), i + 1, num_batches, loss, acc))
+        "[{} Batch {}/{}] acc: {:.3f}".format(
+          dataset_type.upper(), i + 1, num_batches,  acc))
 
-    tf.logging.info("[{} FINAL] loss: {:.3f} acc: {:.3f}".format(
-      dataset_type.upper(), np.mean(all_loss), np.mean(all_correct)))
+    tf.logging.info("[{} FINAL] acc: {:.3f}".format(
+      dataset_type.upper(), np.mean(all_correct)))
 
     for key in all_counter.keys():
       tf.logging.info(f" {self.labels[key]}: {all_counter[key]}")
