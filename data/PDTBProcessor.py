@@ -115,49 +115,6 @@ class PDTBProcessor(object):
 
     self._vocab = sorted(vocab)
 
-  # DEPRECATED
-  def compile_labels(self, instances=None):
-    """DEPRECATED in favor of pre-defined list of labels"""
-    tf.logging.warn(
-      "`compile_labels deprecated in favor of pre-defined list of labels in "
-      "`const.py`", DeprecationWarning)
-
-    # """Collects unique label set from given instances (defaults to training
-    # instances)"""
-    # if not instances:
-    #   tf.logging.info("Compiling labels from training set")
-    #   instances = self.get_train_examples()
-    #   self.remove_cache_by_key("train")
-    #
-    # labels = set()
-    # for instance in instances:
-    #   labels.add(instance.label)
-    #
-    # self._labels = sorted(labels)
-
-  # DEPRECATED
-  def compile_vocab_labels(self, instances=None):
-    """Collects unique vocab and label set from training instances"""
-    tf.logging.warn(
-      "`compile_labels deprecated in favor of pre-defined list of labels in "
-      "`const.py`", DeprecationWarning)
-    return self.compile_vocab(instances=instances)
-
-    # if not instances:
-    #   tf.logging.info("Compiling vocab and labels from training set")
-    #   self._cached['train'] = instances = self.get_train_examples()
-    #
-    # vocab, labels = set(), set()
-    # for instance in instances:
-    #   vocab.update(instance.arg1)
-    #   vocab.update(instance.arg2)
-    #   if instance.conn: # connective may not exist
-    #     vocab.update(instance.conn)
-    #   labels.update(instance.label_list)
-    #
-    # self._vocab = sorted(vocab)
-    # self._labels = sorted(labels)
-
   def get_train_examples(self, rel_filename=None, parse_filename=None,
                          for_bert_embedding=False):
     rel_filename = rel_filename if rel_filename else \
@@ -261,10 +218,13 @@ class PDTBProcessor(object):
           elif self.truncation_mode == 'reverse':
             tokens = tokens[-self.max_arg_length:]
           else:
-            raise NotImplementedError()
+            raise NotImplementedError(
+              "Currently, only `normal` and `reverse` truncation modes are "
+              "supported")
 
           if for_bert_embedding:
-            # for compatibility
+            # for compatibility, since BERT applies its own WordPiece
+            # tokenization.
             tokens = " ".join(tokens)
           else:
             # if less than max_arg_length, pad up with _PAD_
@@ -272,6 +232,7 @@ class PDTBProcessor(object):
 
             if self.padding_action == "pad_left_arg1" and i==0:
               # pad at the beginning of tokens for arg1
+              # must enforce: the tokens should be from Arg1
               tokens = [const.PAD] * num_pad + tokens
             else:
               # pad at the end of tokens
@@ -283,15 +244,11 @@ class PDTBProcessor(object):
 
       sense_list = rel[const.SENSE]
 
-      # change to to_desired level
-      # for i,sense in enumerate(sense_list):
-      #   sense_list[i] = to_level(sense, level=self.sense_level)
-
       if self.multiple_senses_action == "pick_first":
         sense = sense_list[0]
         sense = to_level(sense, level=self.sense_level)
-        # sense_level = get_level(sense)
 
+        # sense_level = get_level(sense)
         # if self.drop_partial_data and sense_level != self.sense_level:
         #   continue
 
@@ -306,24 +263,30 @@ class PDTBProcessor(object):
             guid=guid, exid=exid, arg1=arg1, arg2=arg2, conn=conn, label=sense,
             label_list=sense_list)
           examples.append(input_example)
-          if exid < 10 and dataset_type=='train':
+
+          if exid < 5 and dataset_type=='train':
             tf.logging.info(input_example)
           exid += 1
 
-      elif self.multiple_senses_action == "duplicate":
-        raise NotImplementedError()
-        # for sense in sense_list:
-        #   if rel_type == self.sense_type or self.sense_type == 'all':
-        #     input_example = PDTBRelation(
-        #       guid=guid, exid=exid, arg1=arg1, arg2=arg2, conn=conn,
-        #       label=sense, label_list=sense_list)
-        #     examples.append(input_example)
-        #     if exid < 10 and dataset_type=='train':
-        #       tf.logging.info(input_example)
-        #     exid += 1
-
-      else: # smart picking by majority (?)
-        raise NotImplementedError()
+      else:
+        raise NotImplementedError(
+          "Currently, only `pick_first` for `multiple_senses_action")
+      #
+      # elif self.multiple_senses_action == "duplicate":
+      #   raise NotImplementedError()
+      #   # for sense in sense_list:
+      #   #   if rel_type == self.sense_type or self.sense_type == 'all':
+      #   #     input_example = PDTBRelation(
+      #   #       guid=guid, exid=exid, arg1=arg1, arg2=arg2, conn=conn,
+      #   #       label=sense, label_list=sense_list)
+      #   #     examples.append(input_example)
+      #   #     if exid < 10 and dataset_type=='train':
+      #   #       tf.logging.info(input_example)
+      #   #     exid += 1
+      #
+      # else: # smart picking by majority (?)
+      #   raise NotImplementedError(
+      #     "")
 
     # cache
     if dataset_type not in self._cached:

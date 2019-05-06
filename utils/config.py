@@ -38,7 +38,7 @@ parser.add_argument(
   help="whether to apply pooling on word vectors (True) or on model outputs "
        "(False)")
 parser.add_argument(
-  # TODO
+  # TODO: when extending to explicit types
   "--conn_action", type=str.lower, default=None,
   choices=const.CONN_ACTIONS, help="how to handle connectives")
 parser.add_argument(
@@ -56,7 +56,7 @@ parser.add_argument(
 parser.add_argument(
   "--word_vector_width", type=int, default=768, help="dimension of word vector")
 parser.add_argument(
-  "--do_finetune_embedding", type="bool", nargs="?", const=True, default=False,
+  "--finetune_embedding", type="bool", nargs="?", const=True, default=False,
   help="whether to finetune embedding")
 
 # model architecture config

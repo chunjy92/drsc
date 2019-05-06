@@ -21,7 +21,7 @@ PDTB = "./data/pdtb"
 CONLL = os.path.join(PDTB, "conll")
 
 # config choices
-MODELS = ['mlp',  # TE's best model
+MODELS = ['mlp',  # Te's best model
           'inter_attn', 'inter_attention',
           'self_attn', 'self_attention',
           'inter_intra_attn', 'inter_intra_attention',
@@ -48,7 +48,7 @@ MULTIPLE_SENSES_ACTIONS = ['pick_first', 'duplicate']
 PAD = '_PAD_'
 UNK = '_UNK_'
 
-# pdtb data fields
+# PDTB data.json fields
 ARG1 = 'Arg1'
 ARG2 = 'Arg2'
 CONN = 'Connective'
@@ -60,7 +60,7 @@ RAW_TEXT = 'RawText'
 TYPE = 'Type'
 SENSE = 'Sense'
 
-# parse json fields
+# PDTB parse.json fields
 SENTENCES = 'sentences'
 WORDS = 'words'
 
@@ -68,6 +68,13 @@ WORDS = 'words'
 SENT_ID = -2 # == 3
 TOK_ID = -1 # == 4
 
+
+IMPLICIT_4_WAY = [
+  'Comparison',
+  'Contingency',
+  'Expansion',
+  'Temporal'
+]
 
 # List of senses
 IMPLICIT_11_WAY = [
@@ -88,10 +95,5 @@ IMPLICIT_11_WAY = [
   'Temporal.Asynchronous'
 ]
 
-# 11_WAY + first-level senses
-IMPLICIT_15_WAY = IMPLICIT_11_WAY + [
-  'Comparison',
-  'Contingency',
-  'Expansion',
-  'Temporal'
-]
+# 11_WAY + first-level senses, sorting to ensure same index-label mapping
+IMPLICIT_15_WAY = sorted(IMPLICIT_4_WAY + IMPLICIT_11_WAY)

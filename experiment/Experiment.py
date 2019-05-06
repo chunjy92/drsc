@@ -1,5 +1,6 @@
 #! /usr/bin/python3
 # -*- coding: utf-8 -*-
+import copy
 import random
 from abc import abstractmethod, ABC
 
@@ -12,7 +13,7 @@ __author__ = 'Jayeol Chun'
 
 class Experiment(ABC):
   def __init__(self, hp):
-    self.hp = hp
+    self.hp = copy.deepcopy(hp)
 
     # init data preprocessor
     self.processor = PDTBProcessor(
@@ -29,21 +30,12 @@ class Experiment(ABC):
     self.vocab = None
     if not self.hp.embedding:
       # if no embedding is specified, need to collect vocab from training set
-      # DEPRECATED
-      # self.processor.compile_vocab_labels()
-
+      # TODO (May 5): Set a explicit flag value for random embedding, say,
+      #  as `rand_init` or -
       self.processor.compile_vocab()
       self.vocab = self.processor.vocab
-    else:
-      # in this case vocab comes from external embedding, although self.vocab
-      # can be used to select relevant vocabs
-
-      # DEPRECATED
-      # self.processor.compile_labels()
-      pass
 
     self.labels = self.processor.labels
-
     tf.logging.info(f"All {len(self.labels)} Labels: {self.labels}")
 
     # label to index
@@ -82,6 +74,7 @@ class Experiment(ABC):
   ################################### UTIL #####################################
   # TODO (April 27): is this really necessary? Currently not saving any model
   #   meta-data, including graphs and ckpts
+  #  (May 5): necessary if tf.reset_default_graph(), but not at this point
   def load(self):
     raise NotImplementedError()
 

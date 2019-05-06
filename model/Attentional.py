@@ -1,15 +1,19 @@
 #! /usr/bin/python3
 # -*- coding: utf-8 -*-
-
+import numpy as np
 import tensorflow as tf
+
 from bert import modeling
+from utils import const
+from .Model import Model
 
 __author__ = 'Jayeol Chun'
 
 
-class Attentional(object):
+class Attentional(Model):
   def __init__(self,
                labels,
+               attention_type=None,
                max_arg_length=128,
                word_vector_width=768,
                hidden_size=768,
@@ -20,12 +24,11 @@ class Attentional(object):
                embedding=None,
                embedding_shape=None,
                optimizer='adam',
-               attention_type="self_attn",
                sense_type='implicit',
                pooling_action='concat',
                conn_action=None,
                do_pooling_first=False,
-               do_finetune_embedding=False,
+               finetune_embedding=False,
                scope=None):
     # model architecture will slightly vary depending on combinations of:
     # [dataset_type, pooling_action, conn_action]
@@ -37,7 +40,7 @@ class Attentional(object):
 
     self.pooling_action = pooling_action
     self.do_pooling_first = do_pooling_first
-    self.do_finetune_embedding = do_finetune_embedding
+    self.finetune_embedding = finetune_embedding
 
     self.conn_action = conn_action  # see const.CONN_ACTIONS
 
@@ -57,11 +60,9 @@ class Attentional(object):
     self.labels = labels
     self.num_labels = len(self.labels)
 
-    # for consistency
-    # self.embedding_init_op = None
-    # self.embedding_placeholder = None
-
     self.build(scope)
+
+    # TODO (May 5): tf.reset_default_graph + tf.Saver for train,eval,predict + -
     # self.saver = tf.train.Saver()
 
   def build_attn_layer(self,
@@ -70,9 +71,11 @@ class Attentional(object):
                        layer_attn_type,
                        num_attention_heads=1,
                        size_per_head=512,
-                       attention_probs_dropout_prob=0.0,
+                       attention_probs_dropout_prob=0.1,
                        initializer_range=0.02,
                        do_return_2d_tensor=None):
+    # TODO (May 5): To capture each softmax output, will need a modified
+    #  `attention_layer`
     input_tensor_shape = modeling.get_shape_list(input_tensor, expected_rank=3)
     batch_size = input_tensor_shape[0]
     total_seq_length = input_tensor_shape[1]
@@ -95,6 +98,7 @@ class Attentional(object):
         from_seq_length=total_seq_length,
         to_seq_length=total_seq_length
       )
+
     else:
       arg1 = input_tensor[:, :arg_seq_length, :]
       arg2 = input_tensor[:, arg_seq_length:, :]
@@ -185,7 +189,7 @@ class Attentional(object):
                         do_return_all_layers=False):
     """See `attention_layer` defined in `bert/modeling.py`"""
     # input tensor shape: [batch, arg_length, BERT_hidden_size]
-    # effectively: [32, 128, 768]
+    # for example, using default hparams vals: [64, 128, 768]
     attention_head_size = int(self.hidden_size / self.num_attention_heads)
     input_shape = modeling.get_shape_list(input_tensor, expected_rank=3)
     prev_output = input_tensor
@@ -331,54 +335,6 @@ class Attentional(object):
     output = modeling.layer_norm_and_dropout(output, self.hidden_dropout_prob)
     return output
 
-  def init_embedding(self, placeholder):
-    embedding_table = tf.get_variable(
-      name="embedding_table",
-      shape=self.embedding_shape,
-      trainable=self.do_finetune_embedding
-    )
-
-    self.embedding_init_op = embedding_table.assign(placeholder)
-    return embedding_table
-
-  def build_input_pipeline(self):
-    if self.embedding == 'bert':
-      self.arg1 = tf.placeholder(
-        tf.float32, [None, self.max_arg_length, self.word_vector_width],
-        name="arg1")
-      self.arg2 = tf.placeholder(
-        tf.float32, [None, self.max_arg_length, self.word_vector_width],
-        name="arg2")
-      self.label = tf.placeholder(tf.int32, [None], name="label")
-
-      # TODO: max_len for conn???
-      self.conn = tf.placeholder(
-        tf.float32, [None, self.max_arg_length, self.word_vector_width],
-        name="conn")
-
-    else:
-      self.arg1 = tf.placeholder(tf.int32, [None, self.max_arg_length],
-                                 name="arg1")
-      self.arg2 = tf.placeholder(tf.int32, [None, self.max_arg_length],
-                                 name="arg2")
-      # TODO: max_len for conn???
-      self.conn = tf.placeholder(tf.int32, [None, self.max_arg_length],
-                                 name="conn")
-      self.label = tf.placeholder(tf.int32, [None], name="label")
-
-      self.embedding_placeholder = \
-        tf.placeholder(tf.float32, self.embedding_shape,
-                       "embedding_placeholder")
-
-      self.embedding_table = self.init_embedding(self.embedding_placeholder)
-
-      # embedding lookup
-      with tf.variable_scope("embedding"):
-        arg1 = tf.nn.embedding_lookup(self.embedding_table, self.arg1)
-        arg2 = tf.nn.embedding_lookup(self.embedding_table, self.arg2)
-
-      return arg1, arg2
-
   def build(self, scope=None):
     with tf.variable_scope(scope, default_name="attentional_model"):
       arg1, arg2 = self.build_input_pipeline()
@@ -413,35 +369,35 @@ class Attentional(object):
 
       with tf.variable_scope("pooler"):
         # see `POOLING_ACTIONS` defined in `const.py`
-        pooling_tensor = None
+        pooled_tensor = None
 
         first_cls = tf.squeeze(self.sequence_output[:, 0:1, :], axis=1)
         second_cls = tf.squeeze(
-          self.sequence_output[:,self.max_arg_length:self.max_arg_length+1,:],
+          self.sequence_output[:, self.max_arg_length:self.max_arg_length+1, :],
           axis=1)
 
         if self.pooling_action == "first_cls":
-          pooling_tensor = first_cls
+          pooled_tensor = first_cls
         elif self.pooling_action == "second_cls":
-          pooling_tensor = second_cls
+          pooled_tensor = second_cls
         elif self.pooling_action == 'concat':
-          pooling_tensor = tf.concat([first_cls, second_cls], axis=-1)
+          pooled_tensor = tf.concat([first_cls, second_cls], axis=-1)
         elif self.pooling_action == 'new_cls':
           # TODO: requires re-structuring
-          raise NotImplementedError()
+          raise NotImplementedError("Currently `new_cls` is not supported")
         elif self.pooling_action == "sum":
-          pooling_tensor = tf.reduce_sum([first_cls, second_cls], axis=0)
+          pooled_tensor = tf.reduce_sum([first_cls, second_cls], axis=0)
         elif self.pooling_action == 'mean':
-          pooling_tensor = tf.reduce_mean([first_cls, second_cls], axis=0)
+          pooled_tensor = tf.reduce_mean([first_cls, second_cls], axis=0)
         elif self.pooling_action == "max":
-          pooling_tensor = tf.reduce_max([first_cls, second_cls], axis=0)
+          pooled_tensor = tf.reduce_max([first_cls, second_cls], axis=0)
         elif self.pooling_action == "matmul":
-          pooling_tensor = tf.multiply(first_cls, second_cls)
+          pooled_tensor = tf.multiply(first_cls, second_cls)
         else:
           raise ValueError("Pooling action not understood")
 
         self.pooled_output = tf.layers.dense(
-            pooling_tensor,
+            pooled_tensor,
             self.hidden_size,
             activation=tf.tanh,
             kernel_initializer=modeling.create_initializer())
@@ -469,15 +425,10 @@ class Attentional(object):
         self.acc = tf.reduce_mean(self.correct, name="accuracy")
 
         self.per_example_loss = tf.nn.softmax_cross_entropy_with_logits_v2(
-          labels=one_hot_labels,
-          logits=logits)
+          labels=one_hot_labels, logits=logits)
         self.loss = tf.reduce_mean(self.per_example_loss)
 
-        # reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-        # reg_constant = 0.01
-        # self.loss = loss + reg_constant * tf.reduce_sum(reg_losses)
-
-      optimizer = get_optimizer(self.optimizer)
+      optimizer = self.get_optimizer(self.optimizer)
       self.train_op = optimizer(self.learning_rate).minimize(self.loss)
 
   def get_sequence_output(self):
@@ -492,22 +443,95 @@ class Attentional(object):
   def get_all_encoder_layers(self):
     return self.all_encoder_layers
 
-  def train(self, examples, sess):
-    pass
+  def postprocess_batch_ids(self, batch):
+    arg1, arg2, conn, label_ids = batch
 
-  def eval(self, examples, sess):
-    pass
+    arg1_mask = []
+    arg2_mask = []
+    for batch_example in batch:
+      # arg1 mask
+      batch_example_arg1 = batch_example.arg1
+      batch_example_arg1_mask = []
+      for arg1_token in batch_example_arg1:
+        if arg1_token == const.PAD:
+          batch_example_arg1_mask.append(0)
+        else:
+          batch_example_arg1_mask.append(1)
+      arg1_mask.append(batch_example_arg1_mask)
 
-  def test(self, examples, sess):
-    pass
+      # arg2 mask
+      batch_example_arg2 = batch_example.arg2
+      batch_example_arg2_mask = []
+      for arg2_token in batch_example_arg2:
+        if arg2_token == const.PAD:
+          batch_example_arg2_mask.append(0)
+        else:
+          batch_example_arg2_mask.append(1)
+      arg2_mask.append(batch_example_arg2_mask)
 
+    feed_dict = {
+      self.arg1          : arg1,
+      self.arg2          : arg2,
+      self.conn          : conn,
+      self.label         : label_ids,
+      self.arg1_attn_mask: arg1_mask,
+      self.arg2_attn_mask: arg2_mask
+    }
 
-def get_optimizer(optimizer):
-  if optimizer=="adam":
-    return tf.train.AdamOptimizer
-  elif optimizer == "sgd":
-    return tf.train.GradientDescentOptimizer
-  elif optimizer == 'adagrad':
-    return tf.train.AdagradOptimizer
-  else:
-    raise NotImplementedError()
+    return feed_dict
+
+  def postprocess_batch_vals(self, batch, values,
+                             l2i_mapping=None,
+                             exid_to_feature_mapping=None):
+    # tedious decoupling
+    label_ids = []
+    batch_bert_outputs = []
+    arg1_mask = []
+    arg2_mask = []
+
+    # TODO (May 5): should move this to BERTEmbedding, as `convert_to_vals` or -
+    #   at least part of it.
+    for batch_example in batch:
+      # exid indexes into values to fetch correct values
+      batch_exid = batch_example.exid
+
+      batch_bert_outputs.append(values[batch_exid])
+
+      # label
+      label_ids.append(l2i_mapping(batch_example.label))
+
+      batch_feature = exid_to_feature_mapping[batch_exid]
+
+      batch_arg1_feature = batch_feature[0]
+      batch_arg1_mask = batch_arg1_feature.input_mask
+      arg1_mask.append(batch_arg1_mask)
+
+      batch_arg2_feature = batch_feature[1]
+      batch_arg2_mask = batch_arg2_feature.input_mask
+      arg2_mask.append(batch_arg2_mask)
+
+    # prepare bert output: [batch, total_seq_length, bert_hidden_size]
+    batch_bert_outputs = np.asarray(batch_bert_outputs)
+    total_seq_length = batch_bert_outputs.shape[1]
+    assert total_seq_length == self.max_arg_length * 2, \
+      "Sequence length mismatch between BERT output and parameter"
+
+    arg1 = batch_bert_outputs[:, :self.max_arg_length, :]
+    arg2 = batch_bert_outputs[:, self.max_arg_length:, :]
+
+    # TODO: connectives
+    # since we don't use connectives, set them 0 for now
+    conn = np.zeros([len(batch),
+                     self.max_arg_length,
+                     batch_bert_outputs.shape[-1]])
+
+    feed_dict = {
+      self.arg1          : arg1,
+      self.arg2          : arg2,
+      self.conn          : conn,
+      self.label         : label_ids,
+      self.arg1_attn_mask: arg1_mask,
+      self.arg2_attn_mask: arg2_mask
+    }
+
+    return feed_dict
