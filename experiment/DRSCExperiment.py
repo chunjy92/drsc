@@ -56,10 +56,12 @@ class DRSCExperiment(Experiment):
       self.embedding_table = self.embedding.get_embedding_table()
       self.embedding_shape = self.embedding_table.shape
 
-      # TODO (May 5): maybe enforce the equality here
       if self.hp.word_vector_width != self.hp.hidden_size:
-        # self.hp.word_vector_width = self.hp.hidden_size
-        self.hp.hidden_size = self.hp.word_vector_width
+        tf.logging.info(
+          "[!] `word_vector_width` != `hidden_size`. There will be an "
+          "additional linear layer that projects concatenated arg vector (of "
+          "length `word_vector_width`) to `hidden_size` dimension using a "
+          "learned projection weight matrix.")
 
   def init_model(self):
     if self.hp.model == "mlp":
@@ -171,14 +173,6 @@ class DRSCExperiment(Experiment):
 
     embedding_res = self.embedding.run(examples)
     bert_outputs, exid_to_feature_mapping = embedding_res
-
-    # coupling of these in prep for random shuffling
-    # UDPATE (May 5): bert_outputs: [num_examples, max_arg_length*2] where each
-    #   example's example.exid will index into bert_outputs and retrieve
-    #   the corresponding bert_output. so don't need to couple them.
-    # bert_examples_pair = \
-    #   [(example, bert_output)
-    #    for example, bert_output in zip(examples, bert_outputs)]
 
     for epoch in range(self.hp.num_epochs):
       bert_batches = self.batchify(examples,

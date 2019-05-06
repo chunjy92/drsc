@@ -355,6 +355,17 @@ class Attentional(Model):
         tf.ones([batch_size, self.max_arg_length], dtype=tf.int32) # Arg2: 1s
       ], axis=1)
 
+      # if word_vector_width and hidden_size do not match, need to project
+      if self.word_vector_width != self.hidden_size:
+        with tf.variable_scope("bert_projection"):
+          arg_concat = tf.layers.dense(
+            name="dense",
+            inputs=arg_concat,
+            units=self.hidden_size,
+            kernel_initializer=tf.truncated_normal_initializer(stddev=0.02),
+            use_bias=False
+          )
+
       # additional context encoding with segment_ids and positional encoding
       input_concat = self.encode_concat_context(
         arg_concat, segment_ids, use_segment_ids=True,
@@ -446,36 +457,34 @@ class Attentional(Model):
   def postprocess_batch_ids(self, batch):
     arg1, arg2, conn, label_ids = batch
 
-    arg1_mask = []
-    arg2_mask = []
-    for batch_example in batch:
-      # arg1 mask
-      batch_example_arg1 = batch_example.arg1
-      batch_example_arg1_mask = []
-      for arg1_token in batch_example_arg1:
-        if arg1_token == const.PAD:
-          batch_example_arg1_mask.append(0)
-        else:
-          batch_example_arg1_mask.append(1)
-      arg1_mask.append(batch_example_arg1_mask)
+    arg1_attn_mask = []
+    arg2_attn_mask = []
 
-      # arg2 mask
-      batch_example_arg2 = batch_example.arg2
-      batch_example_arg2_mask = []
-      for arg2_token in batch_example_arg2:
-        if arg2_token == const.PAD:
-          batch_example_arg2_mask.append(0)
+    for arg1_ids in arg1:
+      arg1_mask = []
+      for arg1_id in arg1_ids:
+        if arg1_id == 0: # PAD token id: 0
+          arg1_mask.append(0)
         else:
-          batch_example_arg2_mask.append(1)
-      arg2_mask.append(batch_example_arg2_mask)
+          arg1_mask.append(1)
+      arg1_attn_mask.append(arg1_mask)
+
+    for arg2_ids in arg2:
+      arg2_mask = []
+      for arg2_id in arg2_ids:
+        if arg2_id == 0: # PAD token id: 0
+          arg2_mask.append(0)
+        else:
+          arg2_mask.append(1)
+      arg2_attn_mask.append(arg2_mask)
 
     feed_dict = {
       self.arg1          : arg1,
       self.arg2          : arg2,
       self.conn          : conn,
       self.label         : label_ids,
-      self.arg1_attn_mask: arg1_mask,
-      self.arg2_attn_mask: arg2_mask
+      self.arg1_attn_mask: arg1_attn_mask,
+      self.arg2_attn_mask: arg2_attn_mask
     }
 
     return feed_dict

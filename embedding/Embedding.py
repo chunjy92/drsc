@@ -63,7 +63,9 @@ class Embedding(object):
         np.random.standard_normal([vocab_size, self.word_vector_width])
       embedding[0] = 0 # 0 for padding
     else:
+      assert self.vocab is not None, "requires a reduced number of vocabs"
       if self.embedding.startswith("glove"):
+
         import zipfile
 
         if '6B' in self.embedding:
@@ -93,10 +95,10 @@ class Embedding(object):
           # word = "".join(line[:-self.word_vector_width])
           word = line[0]
 
-          # # only collect words that are in the PDTB dataset
-          # if word not in self.vocab:
-          #   # bottleneck
-          #   continue
+          # only collect words that are in the PDTB dataset
+          if word not in self.vocab:
+            # bottleneck
+            continue
 
           value = np.asarray(line[-self.word_vector_width:], dtype=np.float32)
 
@@ -114,7 +116,6 @@ class Embedding(object):
         self.vocab = vocab
 
       else:
-        assert self.vocab is not None, "requires a reduced number of vocabs"
 
         import gensim
 

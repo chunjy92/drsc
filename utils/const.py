@@ -97,3 +97,26 @@ IMPLICIT_11_WAY = [
 
 # 11_WAY + first-level senses, sorting to ensure same index-label mapping
 IMPLICIT_15_WAY = sorted(IMPLICIT_4_WAY + IMPLICIT_11_WAY)
+
+# from https://github.com/nikitakit/self-attentive-parser/blob/master/src/parse_nk.py
+# TODO (May 5): currently not used
+BERT_TOKEN_MAPPING = {
+    "-LRB-": "(",
+    "-RRB-": ")",
+    "-LCB-": "{",
+    "-RCB-": "}",
+    "-LSB-": "[",
+    "-RSB-": "]",
+    "``": '"',
+    "''": '"',
+    "`": "'",
+    '«': '"',
+    '»': '"',
+    '‘': "'",
+    '’': "'",
+    '“': '"',
+    '”': '"',
+    '„': '"',
+    '‹': "'",
+    '›': "'",
+}
