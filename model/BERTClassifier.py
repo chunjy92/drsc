@@ -227,9 +227,10 @@ class DRSCProcessor(DataProcessor):
     train_ = self._proc.get_train_examples()
     dev_ = self._proc.get_dev_examples()
     test_ = self._proc.get_test_examples()
-    # DEPRECATED
-    # self._proc.compile_vocab_labels(train_+dev_+test_)
-    self._proc.compile_vocab(train_+dev_+test_)
+    blind_ = self._proc.get_blind_examples()
+
+    # so that no UNK are introduced from our own data processor
+    self._proc.compile_vocab(train_+dev_+test_+blind_)
 
     self._data_type = data_type
     self._sense_path = sense_path
@@ -603,7 +604,8 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
     else:
       output_spec = tf.contrib.tpu.TPUEstimatorSpec(
           mode=mode,
-          predictions={"probabilities": probabilities},
+          predictions={"probabilities": probabilities,
+                       "labels_id": tf.argmax(probabilities, axis=1)},
           scaffold_fn=scaffold_fn)
     return output_spec
 
@@ -857,10 +859,11 @@ def main(_):
       result = estimator.predict(input_fn=predict_input_fn)
 
       for i, (prediction, example) in enumerate(zip(result, predict_examples)):
-        probabilities = prediction["probabilities"]
+        # probabilities = prediction["probabilities"]
+        pred = prediction['labels_id']
 
         # label_id
-        pred = np.argmax(probabilities)
+        # pred = np.argmax(probabilities)
         pred_str = label_list[pred]
 
         correct.append(pred_str==example.label)
