@@ -27,14 +27,6 @@ class Experiment(ABC):
       drop_partial_data=self.hp.drop_partial_data
     )
 
-    self.vocab = None
-    if not self.hp.embedding:
-      # if no embedding is specified, need to collect vocab from training set
-      # TODO (May 5): Set a explicit flag value for random embedding, say,
-      #  as `rand_init` or -
-      self.processor.compile_vocab()
-      self.vocab = self.processor.vocab
-
     self.labels = self.processor.labels
     tf.logging.info(f"All {len(self.labels)} Labels: {self.labels}")
 

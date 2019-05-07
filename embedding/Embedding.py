@@ -26,14 +26,14 @@ class Embedding(object):
                word_vector_width=200,
                max_arg_length=128):
     self.embedding = embedding
-    self.vocab = vocab
+    self._vocab = vocab
+
+    if not self._vocab:
+      raise ValueError(
+        "`vocab` must be specifined in advance for `random_init` embedding")
 
     # width of word vector: this will be overwritten if loading from source
     if self.embedding == "random_init":
-      if not self.vocab:
-        raise ValueError(
-          "`vocab` must be specifined in advance for `random_init` embedding")
-
       self.word_vector_width = word_vector_width
     else:
       if self.embedding == "googlenews":
@@ -54,6 +54,10 @@ class Embedding(object):
   def embedding_table(self):
     return self._embedding_table
 
+  @property
+  def vocab(self):
+    return self._vocab
+
   def _init_embedding(self):
     if self.embedding == 'random_init':
       # [_PAD_, _UNK_, ...]
@@ -66,9 +70,12 @@ class Embedding(object):
         np.random.standard_normal([vocab_size, self.word_vector_width])
       embedding[0] = 0 # 0 for padding
     else:
-      assert self.vocab is not None, "requires a reduced number of vocabs"
-      if self.embedding.startswith("glove"):
+      # External w2vs
+      vocab = []
+      embedding = []
 
+      if self.embedding.startswith("glove"):
+        # GLOVES
         import zipfile
 
         if '6B' in self.embedding:
@@ -81,10 +88,8 @@ class Embedding(object):
         archive = zipfile.ZipFile(glove_zip, 'r')
         txt_file = archive.open(glove_txt)
 
-        tf.logging.info(f"Loading {glove_txt}")
+        tf.logging.info(f"Loading {glove_txt}. This could take some time.")
 
-        vocab = []
-        embedding = []
         for line in tqdm(txt_file.readlines()):
           line = line.decode('utf-8').strip().split()
 
@@ -95,12 +100,11 @@ class Embedding(object):
             # skip these
             continue
 
-          # word = "".join(line[:-self.word_vector_width])
           word = line[0]
 
           # only collect words that are in the PDTB dataset
           if word not in self.vocab:
-            # bottleneck
+            # bottleneck but makes training faster
             continue
 
           value = np.asarray(line[-self.word_vector_width:], dtype=np.float32)
@@ -116,10 +120,8 @@ class Embedding(object):
         vocab.insert(0, const.PAD)
         embedding.insert(0, np.zeros(self.word_vector_width, dtype=np.float))
 
-        self.vocab = vocab
-
       else:
-
+        # GOOGLENEWS
         import gensim
 
         googlenews_gz = os.path.join(
@@ -130,13 +132,11 @@ class Embedding(object):
           googlenews_gz, binary=True)
         tf.logging.info("done.")
 
-        # self.vocab: sorted list of vocab
-        vocab = []
-        embedding = []
-        for v in self.vocab:
-          if v in model:
-            embedding.append(model.get_vector(v))
-            vocab.append(v)
+        # overlap
+        vocab = list(set(self.vocab) & set(model.vocab))
+
+        for v in vocab:
+          embedding.append(model.get_vector(v))
 
         # unk token taken as average of all other vectors
         vocab.insert(0, const.UNK)
@@ -146,15 +146,13 @@ class Embedding(object):
         vocab.insert(0, const.PAD)
         embedding.insert(0, np.zeros(self.word_vector_width, dtype=np.float))
 
-      self.vocab = vocab
+      # effectively an overlap between vocab from dataset and vocab from w2v
+      self._vocab = vocab
 
     self._embedding_table = np.array(embedding, np.float)
 
   def get_embedding_table(self):
     return self.embedding_table
-
-  def get_vocab(self):
-    return self.vocab
 
   def convert_to_ids(self, examples, l2i):
     """

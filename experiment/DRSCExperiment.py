@@ -38,22 +38,32 @@ class DRSCExperiment(Experiment):
         use_one_hot_embeddings=self.hp.use_one_hot_embeddings
       )
 
-      self.hp.word_vector_width = 768
+      # effectively 768
+      self.hp.word_vector_width = self.embedding.bert_config.hidden_size
       self.embedding_table = None
       self.embedding_shape = None
 
     else:
       # reduce number of vocab and corresponding vector entries by collecting
       # all unique tokens in dev, test and train, which slows down
-      vocab = self.processor.collect_all_vocab()
-      tf.logging.debug(f"All Vocab: {len(vocab)}")
+      if self.hp.embedding == "random_init":
+        # compiles vocab from training set
+        self.processor.compile_vocab()
+        vocab = self.processor.vocab
+      else:
+        # compiles vocab from training set AND includes vocab from all other
+        # files. We do this because some external embeddings have a large vocab
+        # size so words that never appear are filtered out.
+        vocab = self.processor.collect_all_vocab(include_blind=True)
+
+      tf.logging.info(f"Vocab size: {len(vocab)}")
 
       self.embedding = Embedding(embedding=self.hp.embedding,
                                  vocab=vocab,
                                  word_vector_width=self.hp.word_vector_width,
                                  max_arg_length=self.hp.max_arg_length)
 
-      self.embedding_table = self.embedding.get_embedding_table()
+      self.embedding_table = self.embedding.embedding_table
       self.embedding_shape = self.embedding_table.shape
 
       if self.hp.word_vector_width != self.hp.hidden_size:

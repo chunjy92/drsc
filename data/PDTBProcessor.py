@@ -48,7 +48,7 @@ class PDTBProcessor(object):
     self._vocab = None
     self._labels = None
 
-    # assume `implicit`
+    # TODO (May 7): currently only assumes `implicit`
     assert self.sense_type == "implicit", \
       "Currently only supports implicit relation types"
 
@@ -75,9 +75,6 @@ class PDTBProcessor(object):
   def collect_all_vocab(self, include_blind=False):
     vocab = self.vocab
     if not vocab:
-      # DEPRECATED
-      # self.compile_vocab_labels()
-
       self.compile_vocab()
       vocab = self.vocab
 
@@ -224,7 +221,7 @@ class PDTBProcessor(object):
 
           if for_bert_embedding:
             # for compatibility, since BERT applies its own WordPiece
-            # tokenization.
+            # tokenization and expects a string.
             tokens = " ".join(tokens)
           else:
             # if less than max_arg_length, pad up with _PAD_
@@ -264,7 +261,7 @@ class PDTBProcessor(object):
             label_list=sense_list)
           examples.append(input_example)
 
-          if exid < 5 and dataset_type=='train':
+          if exid < 3 and dataset_type=='train':
             tf.logging.info(input_example)
           exid += 1
 
