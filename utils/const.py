@@ -26,7 +26,8 @@ MODELS = ['mlp',  # Te's best model
           'self_attn', 'self_attention',
           'inter_intra_attn', 'inter_intra_attention',
           'inter_self_attn', 'inter_self_attention']
-EMBEDDINGS = ['bert',
+EMBEDDINGS = ['random_init',
+              'bert',
               'glove.6B.50d', # uncased
               'glove.6B.100d', # uncased
               'glove.6B.200d', # uncased

@@ -28,13 +28,12 @@ class Embedding(object):
     self.embedding = embedding
     self.vocab = vocab
 
-    if not self.embedding and not self.vocab:
-      raise ValueError(
-        "At least one of `embedding` or `vocab` must be specified.")
-    # when both are specified, `embedding_source` takes precedence
-
     # width of word vector: this will be overwritten if loading from source
-    if not self.embedding:
+    if self.embedding == "random_init":
+      if not self.vocab:
+        raise ValueError(
+          "`vocab` must be specifined in advance for `random_init` embedding")
+
       self.word_vector_width = word_vector_width
     else:
       if self.embedding == "googlenews":
@@ -42,6 +41,10 @@ class Embedding(object):
       else:
         last_split = self.embedding.split(".")[-1]
         self.word_vector_width = int(last_split[:-1])
+
+      if self.word_vector_width != word_vector_width:
+        tf.logging.info(
+          f"word_vector_width overwritten to {self.word_vector_width}")
 
     self.max_arg_length = max_arg_length
 
@@ -52,7 +55,7 @@ class Embedding(object):
     return self._embedding_table
 
   def _init_embedding(self):
-    if not self.embedding:
+    if self.embedding == 'random_init':
       # [_PAD_, _UNK_, ...]
       self.vocab.insert(0, const.UNK)
       self.vocab.insert(0, const.PAD)
@@ -172,24 +175,14 @@ class Embedding(object):
           for token in tokens:
             token_ids.append(
               self.vocab.index(token) if token in self.vocab else 1) # UNK at 1
-        # unocmment below if empty conns get max_length of [0]
         else:
+          # mainly targets connectives
           token_ids = [0] * self.max_arg_length # PAD at 0
         data.append(token_ids)
 
-      # convert label into one_hot
-      # UPDATE (April 29): don't. Do this during loss calculation
-      # label_idx = label_mapping(example.label)
-      # one_hot_label = np.zeros(len(label_mapping))
-      # one_hot_label[label_idx] = 1
-      # data.append(one_hot_label)
       label_id = l2i(example.label)
       data.append(label_id)
 
-
-      # tf.logging.info(f"Label info: {example.label} {label_idx} {one_hot_label}")
-      # feature = InputFeatures(arg1=data[0], arg2=data[1], conn=data[2],
-      #                         label=one_hot_label)
       return data
 
     for example in examples:

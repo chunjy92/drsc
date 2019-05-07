@@ -12,14 +12,15 @@ __author__ = 'Jayeol Chun'
 parser = argparse.ArgumentParser("DRSC Argparser")
 parser.register("type", "bool", lambda v: v.lower() == "true")
 
+# REQUIRED config
 parser.add_argument("--model_dir", required=True,
                     help="path to model output directory")
 
-parser.add_argument("--model", type=str.lower, choices=const.MODELS,
-                    help="which model to use")
+parser.add_argument("--model", required=True, type=str.lower,
+                    choices=const.MODELS, help="which model to use")
 
-parser.add_argument("--embedding", type=str, choices=const.EMBEDDINGS,
-                    help="which embedding to use")
+parser.add_argument("--embedding", required=True, type=str,
+                    choices=const.EMBEDDINGS, help="which embedding to use")
 
 # preprocessing config
 parser.add_argument(
@@ -43,7 +44,7 @@ parser.add_argument(
   choices=const.CONN_ACTIONS, help="how to handle connectives")
 parser.add_argument(
   "--padding_action", type=str.lower, default='normal',
-  choices=const.POOLING_ACTIONS, help="how to pad up a batch")
+  choices=const.PADDING_ACTIONS, help="how to pad up a batch")
 parser.add_argument(
   "--use_one_hot_embeddings", type="bool", nargs="?", const=True, default=False,
   help="")
@@ -70,14 +71,14 @@ parser.add_argument(
 
 # experimental setting config
 parser.add_argument(
-  "--num_epochs", type=int, default=3, help="how many iterations to train")
+  "--num_epochs", type=int, default=5, help="how many iterations to train")
 parser.add_argument(
-  "--eval_every", type=int, default=100,
+  "--eval_every", type=int, default=-1,
   help="how many batches per eval during training (-1 to disable)")
 parser.add_argument(
   "--batch_size", type=int, default=64, help="batch size during training")
 parser.add_argument(
-  "--max_arg_length", type=int, default=128,
+  "--max_arg_length", type=int, default=64,
   help="how many tokens for each of arg to keep")
 parser.add_argument(
   "--learning_rate", type=float, default=3e-4,
