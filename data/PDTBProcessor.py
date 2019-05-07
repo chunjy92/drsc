@@ -190,8 +190,9 @@ class PDTBProcessor(object):
         continue
 
       tok_data = [None, None, None]
-      for i, token_type in enumerate([const.ARG1, const.ARG2, const.CONN]):
+      for j, token_type in enumerate([const.ARG1, const.ARG2, const.CONN]):
         # if char_span_list is empty for that token_type, no tokens exist
+        # in that case, the default value of `None` is retained
         if rel[token_type][const.CHAR_SPAN_LIST]:
           token_list = rel[token_type][const.TOKEN_LIST]
 
@@ -227,7 +228,8 @@ class PDTBProcessor(object):
             # if less than max_arg_length, pad up with _PAD_
             num_pad = self.max_arg_length - len(tokens)
 
-            if self.padding_action == "pad_left_arg1" and i==0:
+            if self.padding_action == "pad_left_arg1" and \
+                    token_type==const.ARG1:
               # pad at the beginning of tokens for arg1
               # must enforce: the tokens should be from Arg1
               tokens = [const.PAD] * num_pad + tokens
@@ -235,7 +237,7 @@ class PDTBProcessor(object):
               # pad at the end of tokens
               tokens += [const.PAD] * num_pad
 
-          tok_data[i] = tokens
+          tok_data[j] = tokens
 
       arg1, arg2, conn = tok_data
 
