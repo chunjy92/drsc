@@ -37,9 +37,8 @@ EMBEDDINGS = ['random_init',
               'glove.840B.300d', # cased
               'googlenews']
 TRUNC_MODES = ['normal', 'reverse', 'reverse_arg1', 'reverse_arg2']
-POOLING_ACTIONS = ['sum', 'mean', 'max', 'concat', 'matmul',
-                   # second line applies to `Attentional` model only
-                   'first_cls', 'second_cls', 'new_cls']
+POOLING_ACTIONS = ['sum', 'mean', 'max', 'concat', 'matmul']
+CLS_ACTIONS = ['first_cls', 'second_cls', 'new_cls']
 CONN_ACTIONS = []
 PADDING_ACTIONS = ['normal', 'pad_left_arg1']
 OPTIMIZERS = ['sgd', 'adam', 'adagrad']
@@ -47,8 +46,8 @@ SENSE_TYPES = ['all', 'implicit', 'non-explicit', 'explicit']
 MULTIPLE_SENSES_ACTIONS = ['pick_first', 'duplicate']
 
 # special tokens
-PAD = '_PAD_'
-UNK = '_UNK_'
+PAD = '[PAD]'
+UNK = '[UNK]'
 
 # PDTB data.json fields
 ARG1 = 'Arg1'

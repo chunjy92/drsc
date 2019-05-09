@@ -9,54 +9,6 @@ __author__ = 'Jayeol Chun'
 
 
 class MLP(Model):
-  def __init__(self,
-               labels=None,
-               max_arg_length=128,
-               word_vector_width=50,
-               hidden_size=300,
-               num_hidden_layers=2,
-               learning_rate=0.0001,
-               optimizer='adam',
-               sense_type='implicit',
-               pooling_action='sum',
-               conn_action=None,
-               embedding=None,
-               embedding_shape=None,
-               do_pooling_first=False,
-               finetune_embedding=False,
-               scope=None):
-    # model architecture will slightly vary depending on combinations of:
-    # [dataset_type, pooling_action, conn_action]
-    self.sense_type = sense_type # see const.DATASET_TYPES
-    self.pooling_action = pooling_action # see const.POOLING_ACTIONS
-    # pooling_action_split = pooling_action.split("_")
-    # self.pooling_action = pooling_action_split[0] # sum, mean, concat, ..
-    # self.pooling_timing = pooling_action_split[1] # first or later
-    self.pooling_action = pooling_action
-    self.do_pooling_first = do_pooling_first
-
-    self.conn_action = conn_action # see const.CONN_ACTIONS
-
-    # experimental settings
-    self.max_arg_length = max_arg_length
-    self.word_vector_width = word_vector_width
-    self.hidden_size = hidden_size
-    self.num_hidden_layers = num_hidden_layers
-    self.learning_rate = learning_rate
-    self.optimizer = optimizer
-
-    # data-related
-    self.labels = labels
-    self.num_labels = len(self.labels)
-
-    # embedding related
-    self.embedding = embedding
-    self.embedding_shape = embedding_shape
-    self.finetune_embedding = finetune_embedding
-
-    # model architecture will slightly vary depending on `self.embedding`.
-    self.build(scope)
-
   def build_dense_layers_single_input(self, input_tensor, num_layers=None):
     num_layers = num_layers if num_layers else self.num_hidden_layers
 
@@ -108,29 +60,33 @@ class MLP(Model):
 
   def build(self, scope=None):
     with tf.variable_scope(scope, default_name="mlp_model"):
-      arg1, arg2 = self.build_input_pipeline()
+      self.build_input_pipeline()
 
-      if self.sense_type == "implicit":
-        if self.do_pooling_first:
-          with tf.variable_scope("pooling"):
-            arg1_pooled = \
-              self.apply_pooling_fn(arg1, pooling_action=self.pooling_action)
-            arg2_pooled = \
-              self.apply_pooling_fn(arg2, pooling_action=self.pooling_action)
-
-          combined = self.combine_pooled_tensors(arg1_pooled, arg2_pooled,
-                                                 add_bias=True)
-
-          output = self.build_dense_layers_single_input(combined)
-
-        else:
-          raise NotImplementedError(
-            "Currently `do_pooling_first` must be specified")
+      if self.is_finetunable_bert_embedding:
+        # finetunable bert embedding concatenates arg1 and arg2
+        arg_concat = self.embedding.get_arg_concat()
+        combined_output = self.apply_cls_pooling_fn(arg_concat)
       else:
-        # TODO: for other sense types
-        raise NotImplementedError(
-          "Currently only `implicit` types are supported")
+        if self.is_bert_embedding:
+          arg1, arg2 = self.arg1, self.arg2
+        else:
+          self.embedding_table = self.init_embedding(self.embedding_placeholder)
 
+          # embedding lookup
+          with tf.variable_scope("embedding"):
+            arg1 = tf.nn.embedding_lookup(self.embedding_table, self.arg1)
+            arg2 = tf.nn.embedding_lookup(self.embedding_table, self.arg2)
+
+        with tf.variable_scope("pooling"):
+          arg1_pooled = self.apply_pooling_fn(arg1)
+          arg2_pooled = self.apply_pooling_fn(arg2)
+
+        # linear combination for static embeddings
+        combined_output = self.combine_pooled_tensors(arg1_pooled, arg2_pooled,
+                                                      add_bias=True)
+
+      # same dense layers
+      output = self.build_dense_layers_single_input(combined_output)
 
     hidden_size = output.shape[-1].value
 
@@ -143,8 +99,7 @@ class MLP(Model):
       "output_bias", [self.num_labels], initializer=tf.zeros_initializer())
 
     with tf.variable_scope("loss"):
-      logits = tf.matmul(output, output_weights,
-                         transpose_b=True)
+      logits = tf.matmul(output, output_weights, transpose_b=True)
       logits = tf.nn.bias_add(logits, output_bias)
       self.preds = tf.cast(tf.argmax(logits, axis=-1), tf.int32)
 
@@ -163,19 +118,59 @@ class MLP(Model):
       reg_constant = 0.01
       self.loss = loss + reg_constant * tf.reduce_sum(reg_losses)
 
-    optimizer = self.get_optimizer(self.optimizer)
-    self.train_op = optimizer(self.learning_rate).minimize(self.loss)
+      tf.summary.scalar('loss', self.loss)
+      tf.summary.scalar('acc', self.acc)
 
+    self.train_op = self.optimizer(self.learning_rate).minimize(self.loss)
 
+  ################################# POSTPROCESS ################################
   def postprocess_batch_ids(self, batch):
-    arg1, arg2, conn, label_ids = batch
+    arg1, arg2, conn, label_ids, arg1_mask, arg2_mask = batch
 
-    feed_dict = {
-      self.arg1: arg1,
-      self.arg2: arg2,
-      self.conn: conn,
-      self.label: label_ids
-    }
+    feed_dict = None
+    if self.is_finetunable_bert_embedding:
+      arg1_attn_mask = arg1_mask
+      arg2_attn_mask = arg2_mask
+
+      if not arg1_attn_mask:
+        arg1_attn_mask = []
+
+        for arg1_ids in arg1:
+          arg1_mask = []
+          for arg1_id in arg1_ids:
+            if arg1_id == 0:  # PAD token id: 0
+              arg1_mask.append(0)
+            else:
+              arg1_mask.append(1)
+          arg1_attn_mask.append(arg1_mask)
+
+      if not arg2_attn_mask:
+        arg2_attn_mask = []
+
+        for arg2_ids in arg2:
+          arg2_mask = []
+          for arg2_id in arg2_ids:
+            if arg2_id == 0:  # PAD token id: 0
+              arg2_mask.append(0)
+            else:
+              arg2_mask.append(1)
+          arg2_attn_mask.append(arg2_mask)
+
+      feed_dict = {
+        self.arg1          : arg1,
+        self.arg2          : arg2,
+        self.conn          : conn,
+        self.label         : label_ids,
+        self.arg1_attn_mask: arg1_attn_mask,
+        self.arg2_attn_mask: arg2_attn_mask
+      }
+    else:
+      feed_dict = {
+        self.arg1 : arg1,
+        self.arg2 : arg2,
+        self.conn : conn,
+        self.label: label_ids
+      }
 
     return feed_dict
 
@@ -209,10 +204,10 @@ class MLP(Model):
                      batch_bert_outputs.shape[-1]])
 
     feed_dict = {
-      self.arg1          : arg1,
-      self.arg2          : arg2,
-      self.conn          : conn,
-      self.label         : label_ids,
+      self.arg1 : arg1,
+      self.arg2 : arg2,
+      self.conn : conn,
+      self.label: label_ids,
     }
 
     return feed_dict

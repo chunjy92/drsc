@@ -221,8 +221,7 @@ class PDTBProcessor(object):
               "supported")
 
           if for_bert_embedding:
-            # for compatibility, since BERT applies its own WordPiece
-            # tokenization and expects a string.
+            # for compatibility, since BERT expects a string.
             tokens = " ".join(tokens)
           else:
             # if less than max_arg_length, pad up with _PAD_

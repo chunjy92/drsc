@@ -33,11 +33,15 @@ parser.add_argument(
        "and False for cased model")
 parser.add_argument(
   "--pooling_action", type=str.lower, default="sum",
-  help="which pooling action to apply.")
+  choices=const.POOLING_ACTIONS, help="which pooling action to apply.")
 parser.add_argument(
   "--do_pooling_first", type="bool", nargs="?", const=True, default=False,
   help="whether to apply pooling on word vectors (True) or on model outputs "
        "(False)")
+parser.add_argument(
+  "--cls_action", type=str.lower, default="first_cls",
+  choices=const.CLS_ACTIONS, help="which cls action should be applied"
+)
 parser.add_argument(
   # TODO: when extending to explicit types
   "--conn_action", type=str.lower, default=None,
@@ -76,7 +80,7 @@ parser.add_argument(
   "--eval_every", type=int, default=-1,
   help="how many batches per eval during training (-1 to disable)")
 parser.add_argument(
-  "--batch_size", type=int, default=64, help="batch size during training")
+  "--batch_size", type=int, default=32, help="batch size during training")
 parser.add_argument(
   "--max_arg_length", type=int, default=64,
   help="how many tokens for each of arg to keep")

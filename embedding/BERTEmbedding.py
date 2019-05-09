@@ -1,11 +1,15 @@
 #! /usr/bin/python3
 # -*- coding: utf-8 -*-
+import copy
+import pickle
+
 import numpy as np
 import tensorflow as tf
 import tqdm
-import pickle
 
 from bert import modeling, tokenization
+from utils import const
+from .Embedding import Embedding
 
 __author__ = 'Jayeol Chun'
 
@@ -24,7 +28,7 @@ class BERTInputFeatures(object):
     self.arg_type = arg_type
 
 
-class BERTEmbedding(object):
+class BERTEmbedding(Embedding):
   def __init__(self,
                model_dir,
                bert_config_file,
@@ -34,7 +38,11 @@ class BERTEmbedding(object):
                max_arg_length=128,
                truncation_mode="normal",
                do_lower_case=False,
-               use_one_hot_embeddings=False):
+               finetune_embedding=False,
+               is_training=False,
+               padding_action='normal',
+               use_one_hot_embeddings=False,
+               scope=None):
     self.model_dir = model_dir
     self.bert_config_file = bert_config_file
     self.vocab_file = vocab_file
@@ -43,6 +51,9 @@ class BERTEmbedding(object):
     self.max_arg_length = max_arg_length
     self.truncation_mode = truncation_mode
     self.do_lower_case = do_lower_case
+    self.finetune_embedding = finetune_embedding
+    self.is_training = is_training
+    self.padding_action = padding_action
     self.use_one_hot_embeddings = use_one_hot_embeddings
 
     # Word-Piece tokenizer
@@ -52,8 +63,13 @@ class BERTEmbedding(object):
     # load bert
     tokenization.validate_case_matches_checkpoint(self.do_lower_case,
                                                   self.init_checkpoint)
-    self.bert_config = \
-      modeling.BertConfig.from_json_file(self.bert_config_file)
+    self.bert_config = copy.deepcopy(
+      modeling.BertConfig.from_json_file(self.bert_config_file))
+
+
+
+    self._embedding_table = None
+    self._vocab = tokenization.load_vocab(self.vocab_file)
 
     # max_position_embeddings==512
     if self.max_arg_length > self.bert_config.max_position_embeddings:
@@ -62,7 +78,165 @@ class BERTEmbedding(object):
         "was only trained up to sequence length %d" %
         (self.max_arg_length, self.bert_config.max_position_embeddings))
 
-  def run(self, examples, filename=None):
+    if self.finetune_embedding:
+      self.build(scope)
+
+  ################################### BUILD ####################################
+  def build_bert_model(self,
+                       input_ids,
+                       input_mask,
+                       token_type_ids):
+    if not self.is_training:
+      self.bert_config.hidden_dropout_prob = 0.0
+      self.bert_config.attention_probs_dropout_prob = 0.0
+
+    with tf.variable_scope('bert'):
+      with tf.variable_scope("embeddings"):
+        # Perform embedding lookup on the word ids.
+        (embedding_output, _) = modeling.embedding_lookup(
+            input_ids=input_ids,
+            vocab_size=self.bert_config.vocab_size,
+            embedding_size=self.bert_config.hidden_size,
+            initializer_range=self.bert_config.initializer_range,
+            word_embedding_name="word_embeddings",
+            use_one_hot_embeddings=self.use_one_hot_embeddings
+        )
+
+        # Add positional embeddings and token type embeddings, then layer
+        # normalize and perform dropout.
+        embedding_output = modeling.embedding_postprocessor(
+            input_tensor=embedding_output,
+            use_token_type=True,
+            token_type_ids=token_type_ids,
+            token_type_vocab_size=self.bert_config.type_vocab_size,
+            token_type_embedding_name="token_type_embeddings",
+            use_position_embeddings=True,
+            position_embedding_name="position_embeddings",
+            initializer_range=self.bert_config.initializer_range,
+            max_position_embeddings=self.bert_config.max_position_embeddings,
+            dropout_prob=self.bert_config.hidden_dropout_prob
+        )
+
+      with tf.variable_scope("encoder"):
+        # This converts a 2D mask of shape [batch_size, seq_length] to a 3D
+        # mask of shape [batch_size, seq_length, seq_length] which is used
+        # for the attention scores.
+        attention_mask = modeling.create_attention_mask_from_input_mask(
+            input_ids, input_mask)
+
+        # Run the stacked transformer
+        self.all_encoder_layers = modeling.transformer_model(
+            input_tensor=embedding_output,
+            attention_mask=attention_mask,
+            hidden_size=self.bert_config.hidden_size,
+            num_hidden_layers=self.bert_config.num_hidden_layers,
+            num_attention_heads=self.bert_config.num_attention_heads,
+            intermediate_size=self.bert_config.intermediate_size,
+            intermediate_act_fn=modeling.get_activation(
+              self.bert_config.hidden_act),
+            hidden_dropout_prob=self.bert_config.hidden_dropout_prob,
+            attention_probs_dropout_prob=\
+              self.bert_config.attention_probs_dropout_prob,
+            initializer_range=self.bert_config.initializer_range,
+            do_return_all_layers=True
+        )
+
+        # `final_layer` shape = [batch_size, seq_length, hidden_size]
+        self.sequence_output = self.all_encoder_layers[-1]
+
+  def get_sequence_output(self):
+    """Gets final hidden layer of encoder.
+
+    Returns:
+      float Tensor of shape [batch_size, seq_length, hidden_size] corresponding
+      to the final hidden of the transformer encoder.
+    """
+    return self.sequence_output
+
+  def build(self, scope=None):
+
+    with tf.variable_scope(scope, default_name="bert_embedding_model"):
+      self.arg1 = tf.placeholder(tf.int32, [None, self.max_arg_length],
+                                 name="arg1")
+      self.arg2 = tf.placeholder(tf.int32, [None, self.max_arg_length],
+                                 name="arg2")
+      self.label = tf.placeholder(tf.int32, [None], name="label")
+
+      # TODO: max_len for conn???
+      self.conn = tf.placeholder(tf.int32, [None, self.max_arg_length],
+                                 name="conn")
+
+      # placehodlers for attention_mask
+      self.arg1_attn_mask = tf.placeholder(
+        tf.int32, [None, self.max_arg_length], name="arg1_attention_mask")
+      self.arg2_attn_mask = tf.placeholder(
+        tf.int32, [None, self.max_arg_length], name="arg2_attention_mask")
+
+    arg_concat = tf.concat([self.arg1, self.arg2], axis=1)
+    self.bert_mask_concat = \
+      tf.concat([self.arg1_attn_mask, self.arg2_attn_mask], axis=1)
+
+    segment_ids = tf.concat([
+      tf.zeros_like(self.arg1, dtype=tf.int32),  # Arg1: 0s
+      tf.ones_like(self.arg2, dtype=tf.int32)  # Arg2: 1s
+    ], axis=1)
+
+    self.build_bert_model(
+      arg_concat, input_mask=self.bert_mask_concat, token_type_ids=segment_ids)
+
+    self.bert_arg_concat = self.get_sequence_output()
+
+    ########################### Finetunable BERT #################################
+  def convert_to_ids(self, examples, l2i, **kwargs):
+    arg1, arg2, conn, labels, arg1_mask, arg2_mask = [], [], [], [], [], []
+
+    for example in examples:
+      tokens_a = self.tokenizer.tokenize(example.arg1)
+      tokens_b = self.tokenizer.tokenize(example.arg2)
+
+      if len(tokens_a) > self.max_arg_length - 2:
+        tokens_a = tokens_a[0:(self.max_arg_length - 2)]
+      tokens_a.insert(0, "[CLS]")
+      tokens_a.append("[SEP]")
+
+      if len(tokens_b) > self.max_arg_length - 1:
+        tokens_b = tokens_b[0:(self.max_arg_length - 1)]
+      tokens_b.append("[SEP]")
+
+      input_ids_a = self.tokenizer.convert_tokens_to_ids(tokens_a)
+      input_ids_b = self.tokenizer.convert_tokens_to_ids(tokens_b)
+
+      # The mask has 1 for real tokens and 0 for padding tokens. Only real
+      # tokens are attended to.
+      input_mask_a = [1] * len(input_ids_a)
+      while len(input_ids_a) < self.max_arg_length:
+        if self.padding_action == 'pad_left_arg1':
+          input_ids_a.insert(1, 0)
+          input_mask_a.insert(1, 0)
+        else:
+          input_ids_a.append(0)
+          input_mask_a.append(0)
+
+      input_mask_b = [1] * len(input_ids_b)
+      while len(input_ids_b) < self.max_arg_length:
+        input_ids_b.append(0)
+        input_mask_b.append(0)
+
+      label_id = l2i(example.label)
+
+      # into data
+      arg1.append(input_ids_a)
+      arg2.append(input_ids_b)
+      labels.append(label_id)
+      # TODO: Connectives jsut padding values
+      conn.append([self.vocab[const.PAD]] * self.max_arg_length)
+      arg1_mask.append(input_mask_a)
+      arg2_mask.append(input_mask_b)
+
+    return arg1, arg2, conn, labels, arg1_mask, arg2_mask
+
+  ############################ STATIC BERT ONLY ################################
+  def convert_to_values(self, examples, filename=None):
     if filename:
       with open(filename, 'rb') as f:
         return pickle.load(f)
@@ -122,10 +296,79 @@ class BERTEmbedding(object):
 
     return bert_outputs, exid_to_feature
 
+  ################################## GETTERS ###################################
+  def get_arg_concat(self):
+    return self.bert_arg_concat
 
-  def get_embedding_table(self):
-    raise ValueError(
-      "BERT Embedding produces embedding table by `run` for each data example")
+  def get_attn_mask(self):
+    return self.bert_mask_concat
+
+  ############################### PLACEHOLDERS #################################
+  def get_arg1(self):
+    return self.arg1
+
+  def get_arg2(self):
+    return self.arg2
+
+  def get_label(self):
+    return self.label
+
+  def get_conn(self):
+    return self.conn
+
+  def get_arg1_mask(self):
+    return self.arg1_attn_mask
+
+  def get_arg2_mask(self):
+    return self.arg2_attn_mask
+
+  def get_all_placeholder_ops(self):
+    return self.arg1, self.arg2, self.conn, self.label, \
+           self.arg1_attn_mask, self.arg2_attn_mask
+
+  ################################# POSTPROCESS ################################
+  def postprocess_batch_ids(self, batch):
+    arg1, arg2, conn, label_ids, arg1_mask, arg2_mask = batch
+
+    arg1_attn_mask = arg1_mask
+    arg2_attn_mask = arg2_mask
+
+    # arg1 attn mask
+    if not arg1_attn_mask:
+      arg1_attn_mask = []
+
+      for arg1_ids in arg1:
+        arg1_mask = []
+        for arg1_id in arg1_ids:
+          if arg1_id == self.vocab[const.PAD]:
+            arg1_mask.append(0)
+          else:
+            arg1_mask.append(1)
+        arg1_attn_mask.append(arg1_mask)
+
+    # arg2 attn mask
+    if not arg2_attn_mask:
+      arg1_attn_mask = []
+
+      for arg2_ids in arg2:
+        arg2_mask = []
+        for arg2_id in arg2_ids:
+          if arg2_id == self.vocab[const.PAD]:
+            arg2_mask.append(0)
+          else:
+            arg2_mask.append(1)
+        arg2_attn_mask.append(arg2_mask)
+
+    feed_dict = {
+      self.arg1          : arg1,
+      self.arg2          : arg2,
+      self.conn          : conn,
+      self.label         : label_ids,
+      self.arg1_attn_mask: arg1_attn_mask,
+      self.arg2_attn_mask: arg2_attn_mask
+    }
+
+    return feed_dict
 
 def convert_examples_to_embedding_features(examples, seq_length, tokenizer):
   """Loads a data file into a list of `InputBatch`s."""
@@ -190,6 +433,7 @@ def convert_examples_to_embedding_features(examples, seq_length, tokenizer):
     )
   return features
 
+############################# STATIC BERT ONLY #################################
 def model_fn_builder(bert_config, init_checkpoint, use_one_hot_embeddings):
   """Returns `model_fn` closure for TPUEstimator."""
 
@@ -219,14 +463,6 @@ def model_fn_builder(bert_config, init_checkpoint, use_one_hot_embeddings):
          tvars, init_checkpoint)
 
     tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
-
-    # tf.logging.info("**** Trainable Variables ****")
-    # for var in tvars:
-    #   init_string = ""
-    #   if var.name in initialized_variable_names:
-    #     init_string = ", *INIT_FROM_CKPT*"
-    #   tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
-    #                   init_string)
 
     last_layer_output = model.get_sequence_output()
 

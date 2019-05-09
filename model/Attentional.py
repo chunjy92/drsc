@@ -11,60 +11,6 @@ __author__ = 'Jayeol Chun'
 
 
 class Attentional(Model):
-  def __init__(self,
-               labels,
-               attention_type=None,
-               max_arg_length=128,
-               word_vector_width=768,
-               hidden_size=768,
-               num_hidden_layers=3,
-               num_attention_heads=8,
-               hidden_dropout_prob=0.1,
-               learning_rate=3e-4,
-               embedding=None,
-               embedding_shape=None,
-               optimizer='adam',
-               sense_type='implicit',
-               pooling_action='concat',
-               conn_action=None,
-               do_pooling_first=False,
-               finetune_embedding=False,
-               scope=None):
-    # model architecture will slightly vary depending on combinations of:
-    # [dataset_type, pooling_action, conn_action]
-    self.attention_type = attention_type
-    self.sense_type = sense_type  # see const.DATASET_TYPES
-    self.pooling_action = pooling_action  # see const.POOLING_ACTIONS
-    self.embedding = embedding
-    self.embedding_shape = embedding_shape
-
-    self.pooling_action = pooling_action
-    self.do_pooling_first = do_pooling_first
-    self.finetune_embedding = finetune_embedding
-
-    self.conn_action = conn_action  # see const.CONN_ACTIONS
-
-    # experimental settings
-    self.max_arg_length = max_arg_length
-    self.word_vector_width = word_vector_width
-    self.hidden_size = hidden_size
-    self.num_hidden_layers = num_hidden_layers
-    self.num_attention_heads = num_attention_heads
-    self.hidden_dropout_prob = hidden_dropout_prob
-
-    # optimizer
-    self.learning_rate = learning_rate
-    self.optimizer = optimizer
-
-    # data-related
-    self.labels = labels
-    self.num_labels = len(self.labels)
-
-    self.build(scope)
-
-    # TODO (May 5): tf.reset_default_graph + tf.Saver for train,eval,predict + -
-    # self.saver = tf.train.Saver()
-
   def build_attn_layer(self,
                        input_tensor,
                        attn_mask_concat,
@@ -337,81 +283,66 @@ class Attentional(Model):
 
   def build(self, scope=None):
     with tf.variable_scope(scope, default_name="attentional_model"):
-      arg1, arg2 = self.build_input_pipeline()
+      self.build_input_pipeline()
 
-      # placehodlers for attention_mask
-      self.arg1_attn_mask = tf.placeholder(
-        tf.int32, [None, self.max_arg_length], name="arg1_attention_mask")
-      self.arg2_attn_mask = tf.placeholder(
-        tf.int32, [None, self.max_arg_length], name="arg2_attention_mask")
+      if self.is_finetunable_bert_embedding:
+        input_concat = self.embedding.get_arg_concat()
+        mask_concat = self.embedding.get_attn_mask()
 
-      arg_concat = tf.concat([arg1, arg2], axis=1)
-      mask_concat = tf.concat([self.arg1_attn_mask, self.arg2_attn_mask],
-                              axis=1)
+      else:
+        if self.is_bert_embedding:
+          arg1, arg2 = self.arg1, self.arg2
+        else:
+          self.embedding_table = self.init_embedding(self.embedding_placeholder)
 
-      batch_size = modeling.get_shape_list(arg_concat, expected_rank=3)[0]
-      segment_ids = tf.concat([
-        tf.zeros([batch_size, self.max_arg_length], dtype=tf.int32), # Arg1: 0s
-        tf.ones([batch_size, self.max_arg_length], dtype=tf.int32) # Arg2: 1s
-      ], axis=1)
+          # embedding lookup
+          with tf.variable_scope("embedding"):
+            arg1 = tf.nn.embedding_lookup(self.embedding_table, self.arg1)
+            arg2 = tf.nn.embedding_lookup(self.embedding_table, self.arg2)
+
+        input_concat = tf.concat([arg1, arg2], axis=1)
+        mask_concat = tf.concat([self.arg1_attn_mask, self.arg2_attn_mask],
+                                axis=1)
 
       # if word_vector_width and hidden_size do not match, need to project
       if self.word_vector_width != self.hidden_size:
         with tf.variable_scope("bert_projection"):
-          arg_concat = tf.layers.dense(
+          input_concat = tf.layers.dense(
             name="dense",
-            inputs=arg_concat,
+            inputs=input_concat,
             units=self.hidden_size,
             kernel_initializer=tf.truncated_normal_initializer(stddev=0.02),
             use_bias=False
           )
 
-      # additional context encoding with segment_ids and positional encoding
-      input_concat = self.encode_concat_context(
-        arg_concat, segment_ids, use_segment_ids=True,
-        use_position_embedding=True)
+      if not self.is_finetunable_bert_embedding:
+        # additional context encoding with segment_ids and positional encoding
+        # ONLY when BERT is not being fine-tuned
+        batch_size = modeling.get_shape_list(input_concat, expected_rank=3)[0]
+        segment_ids = tf.concat([
+          tf.zeros([batch_size, self.max_arg_length], dtype=tf.int32),
+          tf.ones([batch_size, self.max_arg_length], dtype=tf.int32)
+        ], axis=1)
 
-      # attention layers
+        input_concat = self.encode_concat_context(
+          input_concat, segment_ids, use_segment_ids=True,
+          use_position_embedding=True)
+
+      # attention layers, for now keeping all encoder layers
       self.all_encoder_layers = \
         self.build_attn_layers(input_concat, attn_mask_concat=mask_concat,
                                do_return_all_layers=True)
-
       self.sequence_output = self.all_encoder_layers[-1]
 
       with tf.variable_scope("pooler"):
-        # see `POOLING_ACTIONS` defined in `const.py`
-        pooled_tensor = None
-
-        first_cls = tf.squeeze(self.sequence_output[:, 0:1, :], axis=1)
-        second_cls = tf.squeeze(
-          self.sequence_output[:, self.max_arg_length:self.max_arg_length+1, :],
-          axis=1)
-
-        if self.pooling_action == "first_cls":
-          pooled_tensor = first_cls
-        elif self.pooling_action == "second_cls":
-          pooled_tensor = second_cls
-        elif self.pooling_action == 'concat':
-          pooled_tensor = tf.concat([first_cls, second_cls], axis=-1)
-        elif self.pooling_action == 'new_cls':
-          # TODO: requires re-structuring
-          raise NotImplementedError("Currently `new_cls` is not supported")
-        elif self.pooling_action == "sum":
-          pooled_tensor = tf.reduce_sum([first_cls, second_cls], axis=0)
-        elif self.pooling_action == 'mean':
-          pooled_tensor = tf.reduce_mean([first_cls, second_cls], axis=0)
-        elif self.pooling_action == "max":
-          pooled_tensor = tf.reduce_max([first_cls, second_cls], axis=0)
-        elif self.pooling_action == "matmul":
-          pooled_tensor = tf.multiply(first_cls, second_cls)
-        else:
-          raise ValueError("Pooling action not understood")
+        # see `CLS_ACTIONS` defined in `const.py`
+        pooled_tensor = self.apply_cls_pooling_fn(self.sequence_output)
 
         self.pooled_output = tf.layers.dense(
-            pooled_tensor,
-            self.hidden_size,
-            activation=tf.tanh,
-            kernel_initializer=modeling.create_initializer())
+          pooled_tensor,
+          self.hidden_size,
+          activation=tf.tanh,
+          kernel_initializer=modeling.create_initializer())
 
       # loss function
       hidden_size = self.pooled_output.shape[-1].value
@@ -424,23 +355,24 @@ class Attentional(Model):
         "output_bias", [self.num_labels], initializer=tf.zeros_initializer())
 
       with tf.variable_scope("loss"):
-        logits = tf.matmul(self.pooled_output, output_weights,
-                           transpose_b=True)
+        logits = tf.matmul(self.pooled_output, output_weights, transpose_b=True)
         logits = tf.nn.bias_add(logits, output_bias)
+
         self.preds = tf.cast(tf.argmax(logits, axis=-1), tf.int32)
-
-        one_hot_labels = tf.one_hot(self.label, depth=self.num_labels,
-                                    dtype=tf.float32)
-
         self.correct = tf.cast(tf.equal(self.preds, self.label), "float")
         self.acc = tf.reduce_mean(self.correct, name="accuracy")
 
-        self.per_example_loss = tf.nn.softmax_cross_entropy_with_logits_v2(
-          labels=one_hot_labels, logits=logits)
+
+        # self.per_example_loss = tf.nn.softmax_cross_entropy_with_logits_v2(
+        #   labels=one_hot_labels, logits=logits)
+        self.per_example_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
+          labels=self.label, logits=logits)
         self.loss = tf.reduce_mean(self.per_example_loss)
 
-      optimizer = self.get_optimizer(self.optimizer)
-      self.train_op = optimizer(self.learning_rate).minimize(self.loss)
+        tf.summary.scalar('loss', self.loss)
+        tf.summary.scalar('acc', self.acc)
+
+      self.train_op = self.optimizer(self.learning_rate).minimize(self.loss)
 
   def get_sequence_output(self):
     """Gets final hidden layer of encoder.
@@ -454,29 +386,37 @@ class Attentional(Model):
   def get_all_encoder_layers(self):
     return self.all_encoder_layers
 
+  ################################# POSTPROCESS ################################
   def postprocess_batch_ids(self, batch):
-    arg1, arg2, conn, label_ids = batch
 
-    arg1_attn_mask = []
-    arg2_attn_mask = []
+    arg1, arg2, conn, label_ids, arg1_mask, arg2_mask = batch
 
-    for arg1_ids in arg1:
-      arg1_mask = []
-      for arg1_id in arg1_ids:
-        if arg1_id == 0: # PAD token id: 0
-          arg1_mask.append(0)
-        else:
-          arg1_mask.append(1)
-      arg1_attn_mask.append(arg1_mask)
+    arg1_attn_mask = arg1_mask
+    arg2_attn_mask = arg2_mask
 
-    for arg2_ids in arg2:
-      arg2_mask = []
-      for arg2_id in arg2_ids:
-        if arg2_id == 0: # PAD token id: 0
-          arg2_mask.append(0)
-        else:
-          arg2_mask.append(1)
-      arg2_attn_mask.append(arg2_mask)
+    if not arg1_attn_mask:
+      arg1_attn_mask = []
+
+      for arg1_ids in arg1:
+        arg1_mask = []
+        for arg1_id in arg1_ids:
+          if arg1_id == 0: # PAD token id: 0
+            arg1_mask.append(0)
+          else:
+            arg1_mask.append(1)
+        arg1_attn_mask.append(arg1_mask)
+
+    if not arg2_attn_mask:
+      arg2_attn_mask = []
+
+      for arg2_ids in arg2:
+        arg2_mask = []
+        for arg2_id in arg2_ids:
+          if arg2_id == 0: # PAD token id: 0
+            arg2_mask.append(0)
+          else:
+            arg2_mask.append(1)
+        arg2_attn_mask.append(arg2_mask)
 
     feed_dict = {
       self.arg1          : arg1,

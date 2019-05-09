@@ -16,6 +16,7 @@ FLAGS = None
 def run_bert_classifier(log_file):
   import sys
   import subprocess
+
   pythonpath = "PYTHONPATH=."
   python = "python"
   bertclf = "model/BERTClassifier.py"

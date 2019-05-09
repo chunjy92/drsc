@@ -1,6 +1,7 @@
 #! /usr/bin/python3
 # -*- coding: utf-8 -*-
 import copy
+import os
 import random
 from abc import abstractmethod, ABC
 
@@ -36,19 +37,15 @@ class Experiment(ABC):
     # index to label
     self.i2l = lambda i: self.labels[i]
 
-    self.init_embedding()
-    tf.logging.info("Embedding init")
+    self.model_ckpt_path = os.path.join(self.hp.model_dir, "model.ckpt")
 
-    self.init_model()
-    tf.logging.info("Model init")
-
-  ############################ Absract methods #################################
+  #############################  Absract methods ###############################
   @abstractmethod
-  def init_embedding(self):
+  def init_embedding(self, is_training=False):
     pass
 
   @abstractmethod
-  def init_model(self):
+  def init_model(self, is_training=False):
     pass
 
   @abstractmethod
@@ -64,12 +61,6 @@ class Experiment(ABC):
     pass
 
   ################################### UTIL #####################################
-  # TODO (April 27): is this really necessary? Currently not saving any model
-  #   meta-data, including graphs and ckpts
-  #  (May 5): necessary if tf.reset_default_graph(), but not at this point
-  def load(self):
-    raise NotImplementedError()
-
   def batchify(self, examples, batch_size, do_shuffle=False):
     if do_shuffle:
       random.shuffle(examples)
@@ -102,8 +93,6 @@ class Experiment(ABC):
     if self.hp.do_train:
       tf.logging.info("***** Begin Train *****")
       self.train()
-    else:
-      self.load()
 
     self.processor.remove_cache_by_key('train')
 
