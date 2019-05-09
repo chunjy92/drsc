@@ -103,14 +103,13 @@ class MLP(Model):
       logits = tf.nn.bias_add(logits, output_bias)
       self.preds = tf.cast(tf.argmax(logits, axis=-1), tf.int32)
 
-      one_hot_labels = tf.one_hot(self.label, depth=self.num_labels,
-                                  dtype=tf.float32)
-
       self.correct = tf.cast(tf.equal(self.preds, self.label), "float")
       self.acc = tf.reduce_mean(self.correct, name="accuracy")
 
-      self.per_example_loss = tf.nn.softmax_cross_entropy_with_logits_v2(
-        labels=one_hot_labels, logits=logits)
+      # self.per_example_loss = tf.nn.softmax_cross_entropy_with_logits_v2(
+      #   labels=one_hot_labels, logits=logits)
+      self.per_example_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
+        labels=self.label, logits=logits)
       loss = tf.reduce_mean(self.per_example_loss)
 
       # l2-norm

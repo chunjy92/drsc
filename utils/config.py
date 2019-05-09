@@ -75,9 +75,9 @@ parser.add_argument(
 
 # experimental setting config
 parser.add_argument(
-  "--num_epochs", type=int, default=5, help="how many iterations to train")
+  "--num_epochs", type=int, default=3, help="how many iterations to train")
 parser.add_argument(
-  "--eval_every", type=int, default=-1,
+  "--log_every", type=int, default=-1,
   help="how many batches per eval during training (-1 to disable)")
 parser.add_argument(
   "--batch_size", type=int, default=32, help="batch size during training")
@@ -85,7 +85,7 @@ parser.add_argument(
   "--max_arg_length", type=int, default=64,
   help="how many tokens for each of arg to keep")
 parser.add_argument(
-  "--learning_rate", type=float, default=3e-4,
+  "--learning_rate", type=float, default=3e-5,
   help="learning rate during training")
 parser.add_argument(
   "--optimizer", type=str.lower, default="adam", choices=const.OPTIMIZERS,

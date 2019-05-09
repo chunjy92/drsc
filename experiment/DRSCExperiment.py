@@ -210,19 +210,14 @@ class DRSCExperiment(Experiment):
         self.summary_writer.add_summary(summary, global_step)
         global_step += 1
 
-        c = Counter(preds)
-        for key in c.keys():
-          tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
+        if (i+1) % self.hp.log_every == 0:
+          c = Counter(preds)
+          for key in c.keys():
+            tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
 
-        tf.logging.info(
-          "[Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
-            epoch, i+1, num_batches, loss, acc))
-
-      #   if self.hp.eval_every > 0 and (i + 1) % self.hp.eval_every == 0:
-      #     self.eval()
-
-      # eval every end of iteration
-      # self.eval()
+          tf.logging.info(
+            "[Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
+              epoch, i+1, num_batches, loss, acc))
 
   def train_from_vals(self, examples, sess):
 
@@ -248,20 +243,14 @@ class DRSCExperiment(Experiment):
         self.summary_writer.add_summary(summary, global_step)
         global_step += 1
 
-        c = Counter(preds)
-        for key in c.keys():
-          tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
+        if (i+1) % self.hp.log_every == 0:
+          c = Counter(preds)
+          for key in c.keys():
+            tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
 
-        tf.logging.info(
-          "[TRAIN Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
-            epoch, i+1, num_batches, loss, acc))
-
-      #   if self.hp.eval_every > 0 and (i + 1) % self.hp.eval_every == 0:
-      #     self.eval()
-      #
-      # if self.hp.eval_every < 0:
-      #   # eval every end of iteration
-      #   self.eval()
+          tf.logging.info(
+            "[TRAIN Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
+              epoch, i+1, num_batches, loss, acc))
 
   ################################### EVAL #####################################
   def eval(self):
