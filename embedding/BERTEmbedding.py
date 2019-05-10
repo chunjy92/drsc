@@ -29,6 +29,10 @@ class BERTInputFeatures(object):
 
 
 class BERTEmbedding(Embedding):
+  """Todo (May 9):
+      1) eval during training
+      2) split_arg_in_bert: whether to treat each arg as separate example
+    """
   def __init__(self,
                model_dir,
                bert_config_file,
@@ -186,7 +190,7 @@ class BERTEmbedding(Embedding):
 
     self.bert_arg_concat = self.get_sequence_output()
 
-    ########################### Finetunable BERT #################################
+  ########################### Finetunable BERT #################################
   def convert_to_ids(self, examples, l2i, **kwargs):
     arg1, arg2, conn, labels, arg1_mask, arg2_mask = [], [], [], [], [], []
 

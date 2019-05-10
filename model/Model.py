@@ -85,7 +85,7 @@ class Model(ABC):
   def postprocess_batch_vals(self, batch, values, **kwargs):
     pass
 
-  ############################## PLACEHOLDER OPS ################################
+  ############################## PLACEHOLDER OPS ###############################
   def init_embedding(self, placeholder):
 
     embedding_table = tf.get_variable(
