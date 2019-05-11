@@ -3,8 +3,7 @@
 import numpy as np
 import tensorflow as tf
 
-from bert import modeling
-from utils import const
+from bert import modeling, optimization
 from .Model import Model
 
 __author__ = 'Jayeol Chun'
@@ -224,6 +223,7 @@ class Attentional(Model):
                             segment_ids,
                             segment_vocab_size=16,
                             max_position_embeddings=512,
+                            hidden_dropout_prob=0.1,
                             initializer_range=0.02,
                             use_segment_ids=False,
                             use_position_embedding=False):
@@ -278,11 +278,15 @@ class Attentional(Model):
                                        position_broadcast_shape)
       output += position_embeddings
 
-    output = modeling.layer_norm_and_dropout(output, self.hidden_dropout_prob)
+    output = modeling.layer_norm_and_dropout(output, hidden_dropout_prob)
     return output
 
   def build(self, scope=None):
-    with tf.variable_scope(scope, default_name="attentional_model"):
+    if not self.is_training:
+      self.hidden_dropout_prob = 0.0
+      self.attention_probs_dropout_prob = 0.0
+
+    with tf.variable_scope("attentional_model", reuse=tf.AUTO_REUSE):
       self.build_input_pipeline()
 
       if self.is_finetunable_bert_embedding:
@@ -325,12 +329,15 @@ class Attentional(Model):
         ], axis=1)
 
         input_concat = self.encode_concat_context(
-          input_concat, segment_ids, use_segment_ids=True,
+          input_concat, segment_ids,
+          hidden_dropout_prob=self.hidden_dropout_prob, use_segment_ids=True,
           use_position_embedding=True)
 
       # attention layers, for now keeping all encoder layers
       self.all_encoder_layers = \
-        self.build_attn_layers(input_concat, attn_mask_concat=mask_concat,
+        self.build_attn_layers(input_concat,
+                               attn_mask_concat=mask_concat,
+                               hidden_dropout_prob=self.hidden_dropout_prob,
                                do_return_all_layers=True)
       self.sequence_output = self.all_encoder_layers[-1]
 
@@ -338,41 +345,59 @@ class Attentional(Model):
         # see `CLS_ACTIONS` defined in `const.py`
         pooled_tensor = self.apply_cls_pooling_fn(self.sequence_output)
 
-        self.pooled_output = tf.layers.dense(
+        pooled_output = tf.layers.dense(
           pooled_tensor,
           self.hidden_size,
           activation=tf.tanh,
           kernel_initializer=modeling.create_initializer())
 
-      # loss function
-      hidden_size = self.pooled_output.shape[-1].value
+    # loss function
+    hidden_size = pooled_output.shape[-1].value
 
-      output_weights = tf.get_variable(
-        "output_weights", [self.num_labels, hidden_size],
-        initializer=tf.truncated_normal_initializer(stddev=0.02))
+    output_weights = tf.get_variable(
+      "output_weights", [self.num_labels, hidden_size],
+      initializer=tf.truncated_normal_initializer(stddev=0.02))
 
-      output_bias = tf.get_variable(
-        "output_bias", [self.num_labels], initializer=tf.zeros_initializer())
+    output_bias = tf.get_variable(
+      "output_bias", [self.num_labels], initializer=tf.zeros_initializer())
 
-      with tf.variable_scope("loss"):
-        logits = tf.matmul(self.pooled_output, output_weights, transpose_b=True)
-        logits = tf.nn.bias_add(logits, output_bias)
+    with tf.variable_scope("loss"):
+      if self.is_training:
+        # I.e., 0.1 dropout
+        pooled_output = tf.nn.dropout(pooled_output, keep_prob=0.9)
 
-        self.preds = tf.cast(tf.argmax(logits, axis=-1), tf.int32)
-        self.correct = tf.cast(tf.equal(self.preds, self.label), "float")
-        self.acc = tf.reduce_mean(self.correct, name="accuracy")
+      logits = tf.matmul(pooled_output, output_weights, transpose_b=True)
+      logits = tf.nn.bias_add(logits, output_bias)
 
+      # self.per_example_loss = tf.nn.softmax_cross_entropy_with_logits_v2(
+      #   labels=one_hot_labels, logits=logits)
+      self.per_example_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
+        labels=self.label, logits=logits, name="per_loss")
+      self.loss = tf.reduce_mean(self.per_example_loss, name="mean_loss")
 
-        # self.per_example_loss = tf.nn.softmax_cross_entropy_with_logits_v2(
-        #   labels=one_hot_labels, logits=logits)
-        self.per_example_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
-          labels=self.label, logits=logits)
-        self.loss = tf.reduce_mean(self.per_example_loss)
+      # tf.summary.scalar('loss', self.loss)
+      # tf.summary.scalar('acc', self.acc)
 
-        tf.summary.scalar('loss', self.loss)
-        tf.summary.scalar('acc', self.acc)
+    self.preds = tf.cast(tf.argmax(logits, axis=-1), tf.int32, name="preds")
+    self.correct = tf.cast(tf.equal(self.preds, self.label), "float",
+                           name="correct")
+    self.acc = tf.reduce_mean(self.correct, name="acc")
 
-      self.train_op = self.optimizer(self.learning_rate).minimize(self.loss)
+    # self.train_op = \
+    #   self.optimizer(self.learning_rate).minimize(self.loss, name="train_op")
+    if self.optimizer_name == "adam" and self.num_warmup_steps > 0:
+      tf.logging.info("Adam Weight Decay Optimizer")
+      self.train_op = optimization.create_optimizer(
+        loss=self.loss, init_lr=self.learning_rate,
+        num_train_steps=self.num_train_steps,
+        num_warmup_steps=self.num_warmup_steps,
+        use_tpu=False
+      )
+    else:
+      optimizer = self.get_optimizer(self.optimizer_name)
+      tf.logging.info(f"{self.optimizer_name.capitalize()} Optimizer")
+      self.train_op = optimizer(self.learning_rate).minimize(self.loss,
+                                                             name='train_op')
 
   def get_sequence_output(self):
     """Gets final hidden layer of encoder.
@@ -387,7 +412,7 @@ class Attentional(Model):
     return self.all_encoder_layers
 
   ################################# POSTPROCESS ################################
-  def postprocess_batch_ids(self, batch):
+  def postprocess_batch_ids(self, batch, fetch_ops):
 
     arg1, arg2, conn, label_ids, arg1_mask, arg2_mask = batch
 
@@ -418,6 +443,14 @@ class Attentional(Model):
             arg2_mask.append(1)
         arg2_attn_mask.append(arg2_mask)
 
+    ops = []
+    for fetch_op in fetch_ops:
+      if fetch_op in self.fetch_ops_dict:
+        ops.append(self.fetch_ops_dict[fetch_op])
+      else:
+        raise ValueError(
+          f"`fetch_ops` contains a `fetch_op` name {fetch_op} that is not understood")
+
     feed_dict = {
       self.arg1          : arg1,
       self.arg2          : arg2,
@@ -427,9 +460,9 @@ class Attentional(Model):
       self.arg2_attn_mask: arg2_attn_mask
     }
 
-    return feed_dict
+    return ops, feed_dict
 
-  def postprocess_batch_vals(self, batch, values,
+  def postprocess_batch_vals(self, batch, values, fetch_ops,
                              l2i_mapping=None,
                              exid_to_feature_mapping=None):
     # tedious decoupling

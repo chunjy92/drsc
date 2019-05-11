@@ -77,16 +77,20 @@ parser.add_argument(
 parser.add_argument(
   "--num_epochs", type=int, default=3, help="how many iterations to train")
 parser.add_argument(
-  "--log_every", type=int, default=-1,
-  help="how many batches per eval during training (-1 to disable)")
+  "--log_every", type=int, default=1,
+  help="how many batch iters per logging")
 parser.add_argument(
   "--batch_size", type=int, default=32, help="batch size during training")
 parser.add_argument(
   "--max_arg_length", type=int, default=64,
   help="how many tokens for each of arg to keep")
 parser.add_argument(
-  "--learning_rate", type=float, default=3e-5,
+  "--learning_rate", type=float, default=5e-5,
   help="learning rate during training")
+parser.add_argument(
+    "--warmup_proportion", type=float, default=0.1,
+    help="Proportion of training to perform linear learning rate warmup for. "
+    "E.g., 0.1 = 10% of training.")
 parser.add_argument(
   "--optimizer", type=str.lower, default="adam", choices=const.OPTIMIZERS,
   help="which optimizer to use")

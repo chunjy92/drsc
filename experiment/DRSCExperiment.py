@@ -20,6 +20,17 @@ class DRSCExperiment(Experiment):
   TODO (May 5): lot of redundancy
   """
   ################################### INIT #####################################
+  def init_all(self, is_training=False):
+    if not is_training:
+      self.num_train_steps = 0
+      self.num_warmup_steps = 0
+
+    self.init_embedding(is_training=is_training)
+    tf.logging.info("Embedding init")
+
+    self.init_model(is_training=is_training)
+    tf.logging.info("Model init")
+
   def init_embedding(self, is_training=False):
     if self.hp.embedding == 'bert':
       bert_model = const.BERT_TEMPLATE.format(self.hp.bert_model)
@@ -42,7 +53,7 @@ class DRSCExperiment(Experiment):
         use_one_hot_embeddings=self.hp.use_one_hot_embeddings
       )
 
-      # effectively 768
+      # effectively 768 for base model
       self.hp.word_vector_width = self.embedding.bert_config.hidden_size
       self.embedding_table = None
       self.embedding_shape = None
@@ -88,6 +99,8 @@ class DRSCExperiment(Experiment):
         num_hidden_layers=self.hp.num_hidden_layers,
         learning_rate=self.hp.learning_rate,
         optimizer=self.hp.optimizer,
+        num_train_steps=self.num_train_steps,
+        num_warmup_steps=self.num_train_steps,
         sense_type=self.hp.sense_type,
         pooling_action=self.hp.pooling_action,
         conn_action=self.hp.conn_action,
@@ -108,11 +121,13 @@ class DRSCExperiment(Experiment):
         num_hidden_layers=self.hp.num_hidden_layers,
         num_attention_heads=self.hp.num_attention_heads,
         learning_rate=self.hp.learning_rate,
+        optimizer=self.hp.optimizer,
+        num_train_steps=self.num_train_steps,
+        num_warmup_steps=self.num_train_steps,
         embedding=self.embedding,
         embedding_name=self.hp.embedding,
         embedding_shape=self.embedding_shape,
         is_training=is_training,
-        optimizer=self.hp.optimizer,
         sense_type=self.hp.sense_type,
         pooling_action=self.hp.pooling_action,
         conn_action=self.hp.conn_action,
@@ -123,13 +138,10 @@ class DRSCExperiment(Experiment):
   ################################### TRAIN ####################################
   def train(self):
     """See docstring for `run`"""
-    # build graph
-    self.init_embedding(is_training=True)
-    tf.logging.info("Embedding init")
 
-    self.init_model(is_training=True)
-    tf.logging.info("Model init")
+    tf.logging.info("***** Begin Train *****")
 
+    # data
     train_fn = None
     if self.hp.embedding == 'bert' and not self.hp.finetune_embedding:
       examples = self.processor.get_train_examples(for_bert_embedding=True)
@@ -143,83 +155,96 @@ class DRSCExperiment(Experiment):
 
     self.processor.remove_cache_by_key('train')
 
-    # Add ops to save and restore all the variables.
-    saver = tf.train.Saver()
+    self.num_train_steps = int(
+      len(examples) / self.hp.batch_size * self.hp.num_epochs)
+    self.num_warmup_steps = \
+      int(self.num_train_steps * self.hp.warmup_proportion)
 
-    init = tf.global_variables_initializer()
+    train_fn(examples)
 
-    tvars = tf.trainable_variables()
-
-    initialized_variable_names = []
-    if self.hp.embedding == "bert" and self.hp.finetune_embedding:
-      (assignment_map, initialized_variable_names) = \
-        modeling.get_assignment_map_from_checkpoint(
-          tvars, self.embedding.init_checkpoint)
-
-      tf.train.init_from_checkpoint(
-        self.embedding.init_checkpoint, assignment_map)
-
-    tf.logging.info("**** Trainable Variables ****")
-    for var in tvars:
-      init_string = ""
-      if var.name in initialized_variable_names:
-        init_string = ", *INIT_FROM_CKPT*"
-      tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
-                      init_string)
-
-    self.sess_config = tf.ConfigProto()
-
-    # if False,pre-allocates all available GPU memory
-    self.sess_config.gpu_options.allow_growth = self.hp.allow_gpu_growth
-
-    # sess handled by Experiment obj, not by each model
-    with tf.Session(config=self.sess_config) as sess:
-      # for TensorBoard
-      self.summary_op = tf.summary.merge_all()
-      self.summary_writer = tf.summary.FileWriter(self.hp.model_dir,
-                                                  sess.graph)
-      sess.run(init)
-
-      train_fn(examples, sess)
-
-      saver.save(sess, self.model_ckpt_path)
-
-  def train_from_ids(self, examples, sess):
-
-    if self.hp.embedding != 'bert':
-      # no embedding lookup necessary for finetunable bert, which is built-in
-      sess.run(
-        self.model.embedding_init_op,
-        feed_dict={self.model.embedding_placeholder: self.embedding_table})
-
+  def train_from_ids(self, examples):
     global_step = 0
     for epoch in range(self.hp.num_epochs):
-      feat_batches = self.batchify(examples,
-                                   batch_size=self.hp.batch_size,
-                                   do_shuffle=True)
-      num_batches = len(feat_batches)
-      tf.logging.info(f"Created {num_batches} batches.")
 
-      for i, batch in enumerate(feat_batches):
-        batch = self.embedding.convert_to_ids(batch, self.l2i)
-        feed_dict = self.model.postprocess_batch_ids(batch)
+      tf.reset_default_graph()
+      with tf.Graph().as_default() as graph:
+        with tf.Session(config=self.sess_config, graph=graph) as sess:
+          model_ckpt = tf.train.latest_checkpoint(self.hp.model_dir)
 
-        _, preds, loss, acc, summary = sess.run(
-          [self.model.train_op, self.model.preds, self.model.loss,
-           self.model.acc, self.summary_op], feed_dict=feed_dict)
-        self.summary_writer.add_summary(summary, global_step)
-        global_step += 1
+          self.init_all(is_training=True)
+          init = tf.global_variables_initializer()
 
-        if (i+1) % self.hp.log_every == 0:
-          c = Counter(preds)
-          for key in c.keys():
-            tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
+          if not model_ckpt:
+            # for TensorBoard
+            self.summary_op = tf.summary.merge_all()
 
-          tf.logging.info(
-            "[Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
-              epoch, i+1, num_batches, loss, acc))
+            saver = tf.train.Saver()
 
-  def train_from_vals(self, examples, sess):
+            tvars = tf.trainable_variables()
+
+            if self.hp.embedding == "bert" and self.hp.finetune_embedding:
+              initialized_variable_names = []
+              (assignment_map, initialized_variable_names) = \
+                modeling.get_assignment_map_from_checkpoint(
+                  tvars, self.embedding.init_checkpoint)
+
+              tf.train.init_from_checkpoint(
+                self.embedding.init_checkpoint, assignment_map)
+
+              tf.logging.info("**** Trainable Variables ****")
+              for var in tvars:
+                init_string = ""
+                if var.name in initialized_variable_names:
+                  init_string = ", *INIT_FROM_CKPT*"
+                tf.logging.info("  name = %s, shape = %s%s", var.name,
+                                var.shape, init_string)
+
+          else:
+            # load from checkpoint
+            saver = tf.train.import_meta_graph(self.model_ckpt_path+".meta")
+            saver.restore(sess, model_ckpt)
+
+          # run init ops
+          sess.run(init)
+          if self.hp.embedding != 'bert':
+            # no embedding lookup necessary for bert embedding
+            sess.run(self.model.embedding_init_op,
+                     feed_dict={
+                       self.model.embedding_placeholder: self.embedding_table})
+
+          feat_batches = self.batchify(examples,
+                                       batch_size=self.hp.batch_size,
+                                       do_shuffle=True)
+          num_batches = len(feat_batches)
+          tf.logging.info(f"Created {num_batches} batches.")
+
+          for i, batch in enumerate(feat_batches):
+            batch = self.embedding.convert_to_ids(batch, self.l2i)
+            fetch_ops = ['train_op', 'preds', 'mean_loss', 'acc']
+
+            ops, feed_dict = \
+              self.model.postprocess_batch_ids(batch, fetch_ops=fetch_ops)
+
+            _, preds, loss, acc = sess.run(ops, feed_dict=feed_dict)
+            # self.summary_writer.add_summary(summary, global_step)
+            global_step += 1
+
+            if (i+1) % self.hp.log_every == 0:
+              c = Counter(preds)
+              for key in c.keys():
+                tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
+
+              tf.logging.info(
+                "[Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
+                  epoch, i+1, num_batches, loss, acc))
+
+          # save
+          saver.save(sess, self.model_ckpt_path)
+
+      self.eval()
+
+
+  def train_from_vals(self, examples):
 
     embedding_res = self.embedding.convert_to_values(examples)
     bert_outputs, exid_to_feature_mapping = embedding_res
@@ -256,6 +281,8 @@ class DRSCExperiment(Experiment):
   def eval(self):
     """See docstring for `run`"""
 
+    tf.logging.info("***** Begin Eval *****")
+
     eval_fn = None
     if self.hp.embedding == 'bert' and not self.hp.finetune_embedding:
       examples = self.processor.get_dev_examples(for_bert_embedding=True)
@@ -269,17 +296,14 @@ class DRSCExperiment(Experiment):
 
     # build graph
     tf.reset_default_graph()
-    self.init_embedding(is_training=False)
-    tf.logging.info("Embedding init")
+    with tf.Graph().as_default() as graph:
+      with tf.Session(config=self.sess_config, graph=graph) as sess:
+        self.init_all(is_training=False)
 
-    self.init_model(is_training=False)
-    tf.logging.info("Model init")
+        saver = tf.train.Saver()
 
-    saver = tf.train.Saver()
-
-    with tf.Session(config=self.sess_config) as sess:
-      saver.restore(sess, self.model_ckpt_path)
-      eval_fn(examples, sess)
+        saver.restore(sess, self.model_ckpt_path)
+        eval_fn(examples, sess)
 
   def eval_from_ids(self, examples, sess):
 
@@ -295,12 +319,12 @@ class DRSCExperiment(Experiment):
 
     for i, batch in enumerate(example_batches):
       batch = self.embedding.convert_to_ids(batch, self.l2i)
-      feed_dict = self.model.postprocess_batch_ids(batch)
+      fetch_ops = ['preds', 'per_loss', 'mean_loss', 'correct', 'acc']
+      ops, feed_dict = self.model.postprocess_batch_ids(batch,
+                                                        fetch_ops=fetch_ops)
 
-      per_example_loss, loss, preds, correct, acc = \
-        sess.run(
-          [self.model.per_example_loss, self.model.loss, self.model.preds,
-           self.model.correct, self.model.acc], feed_dict=feed_dict)
+      preds, per_example_loss, loss, correct, acc = \
+        sess.run(ops, feed_dict=feed_dict)
 
       # accumulate losses and prediction evaluation
       all_loss.extend(per_example_loss)
@@ -380,49 +404,57 @@ class DRSCExperiment(Experiment):
       Dict of {str of dataset_type, list of model_predictions} key-value pair
     """
 
+    tf.logging.info("***** Begin Predict *****")
+
+    # # build graph
+    # tf.reset_default_graph()
+    # self.init_all(is_training=False)
+    #
+    # saver = tf.train.Saver()
+    #
+    # sess = tf.Session(config=self.sess_config)
+    # saver.restore(sess, self.model_ckpt_path)
+    res = {}
+
     # build graph
     tf.reset_default_graph()
-    self.init_embedding(is_training=False)
-    tf.logging.info("Embedding init")
+    with tf.Graph().as_default() as graph:
+      with tf.Session(config=self.sess_config, graph=graph) as sess:
+        self.init_all(is_training=False)
 
-    self.init_model(is_training=False)
-    tf.logging.info("Model init")
+        saver = tf.train.Saver()
 
-    saver = tf.train.Saver()
+        saver.restore(sess, self.model_ckpt_path)
 
-    sess = tf.Session(config=self.sess_config)
-    saver.restore(sess, self.model_ckpt_path)
+        for dataset_type in ['test', 'blind']:
+          is_test_set = dataset_type == 'test'
 
-    res = {}
-    for dataset_type in ['test', 'blind']:
-      is_test_set = dataset_type == 'test'
-
-      predict_fn = None
-      if self.hp.embedding == 'bert' and not self.hp.finetune_embedding:
-        if is_test_set:
-          examples = self.processor.get_test_examples(for_bert_embedding=True)
-        else:
-          examples = self.processor.get_blind_examples(for_bert_embedding=True)
-        predict_fn = self.predict_from_vals
-      else:
-        if self.hp.embedding == 'bert':
-          if is_test_set:
-            examples = self.processor.get_test_examples(for_bert_embedding=True)
+          predict_fn = None
+          if self.hp.embedding == 'bert' and not self.hp.finetune_embedding:
+            if is_test_set:
+              examples = self.processor.get_test_examples(for_bert_embedding=True)
+            else:
+              examples = self.processor.get_blind_examples(for_bert_embedding=True)
+            predict_fn = self.predict_from_vals
           else:
-            examples = self.processor.get_blind_examples(
-              for_bert_embedding=True)
-        else:
-          if is_test_set:
-            examples = self.processor.get_test_examples()
-          else:
-            examples = self.processor.get_blind_examples()
-        predict_fn = self.predict_from_ids
+            if self.hp.embedding == 'bert':
+              if is_test_set:
+                examples = self.processor.get_test_examples(for_bert_embedding=True)
+              else:
+                examples = self.processor.get_blind_examples(
+                  for_bert_embedding=True)
+            else:
+              if is_test_set:
+                examples = self.processor.get_test_examples()
+              else:
+                examples = self.processor.get_blind_examples()
+            predict_fn = self.predict_from_ids
 
-      tf.logging.info(f"Inference on {dataset_type.upper()} set")
-      self.processor.remove_cache_by_key(dataset_type)
+          tf.logging.info(f"Inference on {dataset_type.upper()} set")
+          self.processor.remove_cache_by_key(dataset_type)
 
-      preds = predict_fn(examples, sess, is_test_set=is_test_set)
-      res[dataset_type] = preds
+          preds = predict_fn(examples, sess, is_test_set=is_test_set)
+          res[dataset_type] = preds
 
     return res
 
@@ -444,11 +476,11 @@ class DRSCExperiment(Experiment):
 
     for i, batch in enumerate(example_batches):
       batch = self.embedding.convert_to_ids(batch, self.l2i)
-      feed_dict = self.model.postprocess_batch_ids(batch)
+      fetch_ops = ['preds', 'correct', 'acc']
+      ops, feed_dict = self.model.postprocess_batch_ids(batch,
+                                                        fetch_ops=fetch_ops)
 
-      preds, correct, acc = \
-        sess.run([self.model.preds, self.model.correct, self.model.acc],
-                 feed_dict=feed_dict)
+      preds, correct, acc = sess.run(ops, feed_dict=feed_dict)
 
       all_preds.extend(preds)
       all_correct.extend(correct)

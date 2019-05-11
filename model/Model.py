@@ -18,11 +18,13 @@ class Model(ABC):
                num_attention_heads=8,
                hidden_dropout_prob=0.1,
                learning_rate=3e-4,
+               optimizer='adam',
+               num_train_steps=0,
+               num_warmup_steps=0,
                embedding=None,
                embedding_name=None,
                embedding_shape=None,
                is_training=False,
-               optimizer='adam',
                sense_type='implicit',
                pooling_action='concat',
                cls_action='first_cls',
@@ -51,7 +53,9 @@ class Model(ABC):
     # optimizer
     self.learning_rate = learning_rate
     self.optimizer_name = optimizer
-    self.optimizer = self.get_optimizer(self.optimizer_name)
+    # self.optimizer = self.get_optimizer(self.optimizer_name)
+    self.num_train_steps = num_train_steps
+    self.num_warmup_steps = num_warmup_steps
 
     # data-related
     self.labels = labels
@@ -71,6 +75,8 @@ class Model(ABC):
 
     self.build(scope)
 
+    self.compile_fetch_ops()
+
   ################################### BUILD ####################################
   @abstractmethod
   def build(self, scope=None):
@@ -78,11 +84,11 @@ class Model(ABC):
 
   ############################### POSTPROCESS ##################################
   @abstractmethod
-  def postprocess_batch_ids(self, batch):
+  def postprocess_batch_ids(self, batch, fetch_ops):
     pass
 
   @abstractmethod
-  def postprocess_batch_vals(self, batch, values, **kwargs):
+  def postprocess_batch_vals(self, batch, values, fetch_ops, **kwargs):
     pass
 
   ############################## PLACEHOLDER OPS ###############################
@@ -129,9 +135,9 @@ class Model(ABC):
 
       # placehodlers for attention_mask
       self.arg1_attn_mask = tf.placeholder(
-        tf.int32, [None, self.max_arg_length], name="arg1_attention_mask")
+        tf.int32, [None, self.max_arg_length], name="arg1_attn_mask")
       self.arg2_attn_mask = tf.placeholder(
-        tf.int32, [None, self.max_arg_length], name="arg2_attention_mask")
+        tf.int32, [None, self.max_arg_length], name="arg2_attn_mask")
 
       self.embedding_placeholder = None
       self.embedding_table = None
@@ -153,11 +159,21 @@ class Model(ABC):
 
       # placehodlers for attention_mask
       self.arg1_attn_mask = tf.placeholder(
-        tf.int32, [None, self.max_arg_length], name="arg1_attention_mask")
+        tf.int32, [None, self.max_arg_length], name="arg1_attn_mask")
       self.arg2_attn_mask = tf.placeholder(
-        tf.int32, [None, self.max_arg_length], name="arg2_attention_mask")
+        tf.int32, [None, self.max_arg_length], name="arg2_attn_mask")
 
   ################################### UTIL #####################################
+  def compile_fetch_ops(self):
+    self.fetch_ops_dict = {
+      "per_loss": self.per_example_loss,
+      "mean_loss": self.loss,
+      "preds": self.preds,
+      "correct": self.correct,
+      "acc": self.acc,
+      "train_op": self.train_op
+    }
+
   def apply_cls_pooling_fn(self, input_tensor):
     first_cls = tf.squeeze(input_tensor[:, 0:1, :], axis=1)
     second_cls = tf.squeeze(

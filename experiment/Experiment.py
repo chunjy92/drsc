@@ -37,7 +37,14 @@ class Experiment(ABC):
     # index to label
     self.i2l = lambda i: self.labels[i]
 
+    # save/restoring
     self.model_ckpt_path = os.path.join(self.hp.model_dir, "model.ckpt")
+
+    # sess config
+    self.sess_config = tf.ConfigProto()
+
+    # if False,pre-allocates all available GPU memory
+    self.sess_config.gpu_options.allow_growth = self.hp.allow_gpu_growth
 
   #############################  Absract methods ###############################
   @abstractmethod
@@ -91,17 +98,14 @@ class Experiment(ABC):
         so the conventional retrieval methods through id look-up doesn't work.
     """
     if self.hp.do_train:
-      tf.logging.info("***** Begin Train *****")
       self.train()
 
     self.processor.remove_cache_by_key('train')
 
     if self.hp.do_eval:
-      tf.logging.info("***** Begin Eval *****")
       self.eval()
 
     self.processor.remove_cache_by_key('dev')
 
     if self.hp.do_predict:
-      tf.logging.info("***** Begin Predict *****")
       self.predict()

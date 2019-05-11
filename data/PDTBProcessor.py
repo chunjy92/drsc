@@ -262,7 +262,7 @@ class PDTBProcessor(object):
             label_list=sense_list)
           examples.append(input_example)
 
-          if exid < 3 and dataset_type=='train':
+          if exid < 5 and dataset_type=='train':
             tf.logging.info(input_example)
           exid += 1
 

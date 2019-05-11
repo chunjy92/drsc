@@ -94,7 +94,7 @@ class BERTEmbedding(Embedding):
       self.bert_config.hidden_dropout_prob = 0.0
       self.bert_config.attention_probs_dropout_prob = 0.0
 
-    with tf.variable_scope('bert'):
+    with tf.variable_scope('bert', reuse=tf.AUTO_REUSE):
       with tf.variable_scope("embeddings"):
         # Perform embedding lookup on the word ids.
         (embedding_output, _) = modeling.embedding_lookup(
@@ -159,31 +159,32 @@ class BERTEmbedding(Embedding):
 
   def build(self, scope=None):
 
+
+    self.arg1 = tf.placeholder(tf.int32, [None, self.max_arg_length],
+                               name="arg1")
+    self.arg2 = tf.placeholder(tf.int32, [None, self.max_arg_length],
+                               name="arg2")
+    self.label = tf.placeholder(tf.int32, [None], name="label")
+
+    # TODO: max_len for conn???
+    self.conn = tf.placeholder(tf.int32, [None, self.max_arg_length],
+                               name="conn")
+
+    # placehodlers for attention_mask
+    self.arg1_attn_mask = tf.placeholder(
+      tf.int32, [None, self.max_arg_length], name="arg1_attn_mask")
+    self.arg2_attn_mask = tf.placeholder(
+      tf.int32, [None, self.max_arg_length], name="arg2_attn_mask")
+
     with tf.variable_scope(scope, default_name="bert_embedding_model"):
-      self.arg1 = tf.placeholder(tf.int32, [None, self.max_arg_length],
-                                 name="arg1")
-      self.arg2 = tf.placeholder(tf.int32, [None, self.max_arg_length],
-                                 name="arg2")
-      self.label = tf.placeholder(tf.int32, [None], name="label")
+      arg_concat = tf.concat([self.arg1, self.arg2], axis=1)
+      self.bert_mask_concat = \
+        tf.concat([self.arg1_attn_mask, self.arg2_attn_mask], axis=1)
 
-      # TODO: max_len for conn???
-      self.conn = tf.placeholder(tf.int32, [None, self.max_arg_length],
-                                 name="conn")
-
-      # placehodlers for attention_mask
-      self.arg1_attn_mask = tf.placeholder(
-        tf.int32, [None, self.max_arg_length], name="arg1_attention_mask")
-      self.arg2_attn_mask = tf.placeholder(
-        tf.int32, [None, self.max_arg_length], name="arg2_attention_mask")
-
-    arg_concat = tf.concat([self.arg1, self.arg2], axis=1)
-    self.bert_mask_concat = \
-      tf.concat([self.arg1_attn_mask, self.arg2_attn_mask], axis=1)
-
-    segment_ids = tf.concat([
-      tf.zeros_like(self.arg1, dtype=tf.int32),  # Arg1: 0s
-      tf.ones_like(self.arg2, dtype=tf.int32)  # Arg2: 1s
-    ], axis=1)
+      segment_ids = tf.concat([
+        tf.zeros_like(self.arg1, dtype=tf.int32),  # Arg1: 0s
+        tf.ones_like(self.arg2, dtype=tf.int32)  # Arg2: 1s
+      ], axis=1)
 
     self.build_bert_model(
       arg_concat, input_mask=self.bert_mask_concat, token_type_ids=segment_ids)
@@ -331,48 +332,48 @@ class BERTEmbedding(Embedding):
            self.arg1_attn_mask, self.arg2_attn_mask
 
   ################################# POSTPROCESS ################################
-  def postprocess_batch_ids(self, batch):
-    arg1, arg2, conn, label_ids, arg1_mask, arg2_mask = batch
-
-    arg1_attn_mask = arg1_mask
-    arg2_attn_mask = arg2_mask
-
-    # arg1 attn mask
-    if not arg1_attn_mask:
-      arg1_attn_mask = []
-
-      for arg1_ids in arg1:
-        arg1_mask = []
-        for arg1_id in arg1_ids:
-          if arg1_id == self.vocab[const.PAD]:
-            arg1_mask.append(0)
-          else:
-            arg1_mask.append(1)
-        arg1_attn_mask.append(arg1_mask)
-
-    # arg2 attn mask
-    if not arg2_attn_mask:
-      arg1_attn_mask = []
-
-      for arg2_ids in arg2:
-        arg2_mask = []
-        for arg2_id in arg2_ids:
-          if arg2_id == self.vocab[const.PAD]:
-            arg2_mask.append(0)
-          else:
-            arg2_mask.append(1)
-        arg2_attn_mask.append(arg2_mask)
-
-    feed_dict = {
-      self.arg1          : arg1,
-      self.arg2          : arg2,
-      self.conn          : conn,
-      self.label         : label_ids,
-      self.arg1_attn_mask: arg1_attn_mask,
-      self.arg2_attn_mask: arg2_attn_mask
-    }
-
-    return feed_dict
+  # def postprocess_batch_ids(self, batch):
+  #   arg1, arg2, conn, label_ids, arg1_mask, arg2_mask = batch
+  #
+  #   arg1_attn_mask = arg1_mask
+  #   arg2_attn_mask = arg2_mask
+  #
+  #   # arg1 attn mask
+  #   if not arg1_attn_mask:
+  #     arg1_attn_mask = []
+  #
+  #     for arg1_ids in arg1:
+  #       arg1_mask = []
+  #       for arg1_id in arg1_ids:
+  #         if arg1_id == self.vocab[const.PAD]:
+  #           arg1_mask.append(0)
+  #         else:
+  #           arg1_mask.append(1)
+  #       arg1_attn_mask.append(arg1_mask)
+  #
+  #   # arg2 attn mask
+  #   if not arg2_attn_mask:
+  #     arg1_attn_mask = []
+  #
+  #     for arg2_ids in arg2:
+  #       arg2_mask = []
+  #       for arg2_id in arg2_ids:
+  #         if arg2_id == self.vocab[const.PAD]:
+  #           arg2_mask.append(0)
+  #         else:
+  #           arg2_mask.append(1)
+  #       arg2_attn_mask.append(arg2_mask)
+  #
+  #   feed_dict = {
+  #     self.arg1          : arg1,
+  #     self.arg2          : arg2,
+  #     self.conn          : conn,
+  #     self.label         : label_ids,
+  #     self.arg1_attn_mask: arg1_attn_mask,
+  #     self.arg2_attn_mask: arg2_attn_mask
+  #   }
+  #
+  #   return feed_dict
 
 def convert_examples_to_embedding_features(examples, seq_length, tokenizer):
   """Loads a data file into a list of `InputBatch`s."""
