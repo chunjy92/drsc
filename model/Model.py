@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 
 import tensorflow as tf
 
+from utils import const
+
 __author__ = 'Jayeol Chun'
 
 
@@ -24,6 +26,7 @@ class Model(ABC):
                embedding=None,
                embedding_name=None,
                embedding_shape=None,
+               split_args_in_embedding=False,
                is_training=False,
                sense_type='implicit',
                pooling_action='concat',
@@ -37,6 +40,7 @@ class Model(ABC):
     self.attention_type = attention_type
     self.sense_type = sense_type  # see const.DATASET_TYPES
     self.pooling_action = pooling_action  # see const.POOLING_ACTIONS
+    self.split_args_in_embedding = split_args_in_embedding
     self.embedding = embedding
     self.embedding_name = embedding_name
     self.embedding_shape = embedding_shape
@@ -109,12 +113,19 @@ class Model(ABC):
 
     if self.is_finetunable_bert_embedding:
       placeholer_ops = self.embedding.get_all_placeholder_ops()
-      self.arg1 = placeholer_ops[0]
-      self.arg2 = placeholer_ops[1]
-      self.conn = placeholer_ops[2]
-      self.label = placeholer_ops[3]
-      self.arg1_attn_mask = placeholer_ops[4]
-      self.arg2_attn_mask = placeholer_ops[5]
+
+      if self.split_args_in_embedding:
+        self.arg = placeholer_ops[0]
+        self.conn = placeholer_ops[1]
+        self.label = placeholer_ops[2]
+        self.arg_attn_mask = placeholer_ops[3]
+      else:
+        self.arg1 = placeholer_ops[0]
+        self.arg2 = placeholer_ops[1]
+        self.conn = placeholer_ops[2]
+        self.label = placeholer_ops[3]
+        self.arg1_attn_mask = placeholer_ops[4]
+        self.arg2_attn_mask = placeholer_ops[5]
 
       self.embedding_placeholder = None
       self.embedding_table = None
@@ -174,41 +185,52 @@ class Model(ABC):
       "train_op": self.train_op
     }
 
-  def apply_cls_pooling_fn(self, input_tensor):
+  def apply_cls_pooling_fn(self, input_tensor, cls_action=None):
     first_cls = tf.squeeze(input_tensor[:, 0:1, :], axis=1)
     second_cls = tf.squeeze(
       input_tensor[:, self.max_arg_length:self.max_arg_length+1, :], axis=1)
 
+    if not cls_action:
+      cls_action = self.cls_action
+
     pooled_tensor = None
-    if self.cls_action == "first_cls":
+    if cls_action == "first_cls":
       pooled_tensor = first_cls
-    elif self.cls_action == "second_cls":
+    elif cls_action == "second_cls":
       pooled_tensor = second_cls
-    elif self.pooling_action == 'concat':
+    elif cls_action == 'concat':
       pooled_tensor = tf.concat([first_cls, second_cls], axis=-1)
-    elif self.pooling_action == 'new_cls':
+    elif cls_action == 'new_cls':
       # TODO: requires re-structuring
       raise NotImplementedError("Currently `new_cls` is not supported")
     else:
-      raise ValueError("CLS Pooling action not understood")
+      if cls_action in const.POOLING_ACTIONS:
+        pooled_tensor = self.apply_pooling_fn(input_tensor,
+                                              pooling_action=cls_action)
+      else:
+        raise ValueError("CLS Pooling action not understood")
 
     return pooled_tensor
 
-  def apply_pooling_fn(self, input_tensor, second_tensor=None):
+  def apply_pooling_fn(self, input_tensor, second_tensor=None,
+                       pooling_action=None):
     # tensor shape: [batch, arg_length, word_vector_width]
-    if self.pooling_action == "sum":
+    if not pooling_action:
+      pooling_action = self.pooling_action
+
+    if pooling_action == "sum":
       if second_tensor:
         return tf.add(input_tensor, second_tensor)
       return tf.reduce_sum(input_tensor, axis=1)
-    elif self.pooling_action == "mean":
+    elif pooling_action == "mean":
       if second_tensor:
         return tf.reduce_mean([input_tensor, second_tensor], axis=0)
       return tf.reduce_mean(input_tensor, axis=1)
-    elif self.pooling_action == "max":
+    elif pooling_action == "max":
       if second_tensor:
         return tf.reduce_max([input_tensor, second_tensor], axis=0)
       return tf.reduce_max(input_tensor, axis=1)
-    elif self.pooling_action in ["concat", 'matmul']:
+    elif pooling_action in ["concat", 'matmul']:
       # usually works on model outputs for each arg1 and arg2
       if not second_tensor:
         raise ValueError("Second tensor passed as `None` value")
@@ -216,7 +238,7 @@ class Model(ABC):
       second_tensor_shape = second_tensor.shape
       assert_op = tf.assert_equal(input_tensor_shape, second_tensor_shape)
       with tf.control_dependencies([assert_op]):
-        if self.pooling_action == 'concat':
+        if pooling_action == 'concat':
           return tf.concat([input_tensor, second_tensor], axis=-1)
         else:
           return tf.multiply(input_tensor, second_tensor)

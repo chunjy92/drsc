@@ -34,39 +34,23 @@ parser.add_argument(
 parser.add_argument(
   "--pooling_action", type=str.lower, default="sum",
   choices=const.POOLING_ACTIONS, help="which pooling action to apply.")
-parser.add_argument(
-  "--do_pooling_first", type="bool", nargs="?", const=True, default=False,
-  help="whether to apply pooling on word vectors (True) or on model outputs "
-       "(False)")
-parser.add_argument(
-  "--cls_action", type=str.lower, default="first_cls",
-  choices=const.CLS_ACTIONS, help="which cls action should be applied"
-)
-parser.add_argument(
-  # TODO: when extending to explicit types
-  "--conn_action", type=str.lower, default=None,
-  choices=const.CONN_ACTIONS, help="how to handle connectives")
-parser.add_argument(
-  "--padding_action", type=str.lower, default='normal',
-  choices=const.PADDING_ACTIONS, help="how to pad up a batch")
-parser.add_argument(
-  "--use_one_hot_embeddings", type="bool", nargs="?", const=True, default=False,
-  help="")
 
 # embedding config
 parser.add_argument(
   "--bert_model", type=str.lower, default="uncased",
   help="which bert model to use")
-
 parser.add_argument(
   "--word_vector_width", type=int, default=768, help="dimension of word vector")
 parser.add_argument(
   "--finetune_embedding", type="bool", nargs="?", const=True, default=False,
   help="whether to finetune embedding")
+parser.add_argument(
+  "--split_args_in_embedding", type="bool", nargs="?", const=True, default=True,
+  help="whether to treat Arg1 and Arg2 separately in bert computation")
 
 # model architecture config
 parser.add_argument(
-  "--hidden_size", type=int, default=768, help="hidden size of model layers")
+  "--hidden_size", type=int, default=512, help="hidden size of model layers")
 parser.add_argument(
   "--num_hidden_layers", type=int, default=4,
   help="number of model's hidden layers")
@@ -75,7 +59,7 @@ parser.add_argument(
 
 # experimental setting config
 parser.add_argument(
-  "--num_epochs", type=int, default=3, help="how many iterations to train")
+  "--num_epochs", type=int, default=5, help="how many iterations to train")
 parser.add_argument(
   "--log_every", type=int, default=1,
   help="how many batch iters per logging")
@@ -95,6 +79,23 @@ parser.add_argument(
   "--optimizer", type=str.lower, default="adam", choices=const.OPTIMIZERS,
   help="which optimizer to use")
 
+# control actions config
+parser.add_argument(
+  "--do_pooling_first", type="bool", nargs="?", const=True, default=True,
+  help="whether to apply pooling on word vectors (True) or on model outputs "
+       "(False). Not used in `Attentional` model")
+parser.add_argument(
+  "--cls_action", type=str.lower, default="first_cls",
+  choices=const.CLS_ACTIONS, help="which cls pooling action should be applied")
+parser.add_argument(
+  # TODO: when extending to explicit types
+  #   (May 11) Currently not used
+  "--conn_action", type=str.lower, default=None,
+  choices=const.CONN_ACTIONS, help="how to handle connectives")
+parser.add_argument(
+  "--padding_action", type=str.lower, default='normal',
+  choices=const.PADDING_ACTIONS, help="how to pad up a batch")
+
 # sense-related config
 parser.add_argument(
   "--sense_level", type=int, default=2, help="level of sense to use")
@@ -111,18 +112,18 @@ parser.add_argument(
 
 # experiment control flags
 parser.add_argument(
-  "--do_train", type="bool", nargs="?", const=True, default=False,
+  "--do_train", type="bool", nargs="?", const=True, default=True,
   help="whether to run training")
 parser.add_argument(
-  "--do_eval", type="bool", nargs="?", const=True, default=False,
+  "--do_eval", type="bool", nargs="?", const=True, default=True,
   help="whether to run eval")
 parser.add_argument(
-  "--do_predict", type="bool", nargs="?", const=True, default=False,
+  "--do_predict", type="bool", nargs="?", const=True, default=True,
   help="whether to run predict")
 
 # misc flags
 parser.add_argument(
-  "--allow_gpu_growth", type="bool", nargs="?", const=True, default=True,
+  "--allow_gpu_growth", type="bool", nargs="?", const=True, default=False,
   help="whether to allow gpu growth or pre-allocate all available resources")
 parser.add_argument(
   "--do_debug", type="bool", nargs="?", const=True, default=False,

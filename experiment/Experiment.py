@@ -46,6 +46,10 @@ class Experiment(ABC):
     # if False,pre-allocates all available GPU memory
     self.sess_config.gpu_options.allow_growth = self.hp.allow_gpu_growth
 
+    # if not is_training:
+    self.num_train_steps = 0
+    self.num_warmup_steps = 0
+
   #############################  Absract methods ###############################
   @abstractmethod
   def init_embedding(self, is_training=False):

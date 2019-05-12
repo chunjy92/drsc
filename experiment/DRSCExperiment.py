@@ -21,10 +21,6 @@ class DRSCExperiment(Experiment):
   """
   ################################### INIT #####################################
   def init_all(self, is_training=False):
-    if not is_training:
-      self.num_train_steps = 0
-      self.num_warmup_steps = 0
-
     self.init_embedding(is_training=is_training)
     tf.logging.info("Embedding init")
 
@@ -48,9 +44,9 @@ class DRSCExperiment(Experiment):
         truncation_mode=self.hp.truncation_mode,
         do_lower_case=self.hp.do_lower_case,
         finetune_embedding=self.hp.finetune_embedding,
+        split_args=self.hp.split_args_in_embedding,
         is_training=is_training,
-        padding_action=self.hp.padding_action,
-        use_one_hot_embeddings=self.hp.use_one_hot_embeddings
+        padding_action=self.hp.padding_action
       )
 
       # effectively 768 for base model
@@ -73,7 +69,8 @@ class DRSCExperiment(Experiment):
 
       self.embedding = \
         embedding.StaticEmbedding(
-          embedding=self.hp.embedding, vocab=vocab,
+          embedding=self.hp.embedding,
+          vocab=vocab,
           word_vector_width=self.hp.word_vector_width,
           max_arg_length=self.hp.max_arg_length)
 
@@ -86,8 +83,6 @@ class DRSCExperiment(Experiment):
           "additional linear layer that projects concatenated arg vector (of "
           "length `word_vector_width`) to `hidden_size` dimension using a "
           "learned projection weight matrix.")
-
-    tf.logging.info(f"Vocab size: {len(self.embedding.vocab)}")
 
   def init_model(self, is_training=False):
     if self.hp.model == "mlp":
@@ -109,7 +104,8 @@ class DRSCExperiment(Experiment):
         embedding_shape=self.embedding_shape,
         is_training=is_training,
         do_pooling_first=self.hp.do_pooling_first,
-        finetune_embedding=self.hp.finetune_embedding
+        finetune_embedding=self.hp.finetune_embedding,
+        split_args_in_embedding=self.hp.split_args_in_embedding
       )
     else:
       self.model = model.Attentional(
@@ -132,7 +128,8 @@ class DRSCExperiment(Experiment):
         pooling_action=self.hp.pooling_action,
         conn_action=self.hp.conn_action,
         do_pooling_first=self.hp.do_pooling_first,
-        finetune_embedding=self.hp.finetune_embedding
+        finetune_embedding=self.hp.finetune_embedding,
+        split_args_in_embedding=self.hp.split_args_in_embedding
       )
 
   ################################### TRAIN ####################################
@@ -238,7 +235,7 @@ class DRSCExperiment(Experiment):
                 "[Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
                   epoch, i+1, num_batches, loss, acc))
 
-          # save
+          tf.logging.info("Saving model parameters")
           saver.save(sess, self.model_ckpt_path)
 
       self.eval()

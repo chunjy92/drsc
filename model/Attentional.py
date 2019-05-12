@@ -126,13 +126,17 @@ class Attentional(Model):
   def build_attn_layers(self,
                         input_tensor,
                         attn_mask_concat,
-                        intermediate_size=3072,
+                        intermediate_size=2048,
                         intermediate_act_fn=modeling.gelu,
                         hidden_dropout_prob=0.1,
                         attention_probs_dropout_prob=0.1,
                         initializer_range=0.02,
                         do_return_all_layers=False):
     """See `attention_layer` defined in `bert/modeling.py`"""
+    if not self.is_training:
+      hidden_dropout_prob = 0.0
+      attention_probs_dropout_prob = 0.0
+
     # input tensor shape: [batch, arg_length, BERT_hidden_size]
     # for example, using default hparams vals: [64, 128, 768]
     attention_head_size = int(self.hidden_size / self.num_attention_heads)
@@ -286,7 +290,7 @@ class Attentional(Model):
       self.hidden_dropout_prob = 0.0
       self.attention_probs_dropout_prob = 0.0
 
-    with tf.variable_scope("attentional_model", reuse=tf.AUTO_REUSE):
+    with tf.variable_scope("attentional_model"):
       self.build_input_pipeline()
 
       if self.is_finetunable_bert_embedding:
@@ -319,19 +323,19 @@ class Attentional(Model):
             use_bias=False
           )
 
-      if not self.is_finetunable_bert_embedding:
-        # additional context encoding with segment_ids and positional encoding
-        # ONLY when BERT is not being fine-tuned
-        batch_size = modeling.get_shape_list(input_concat, expected_rank=3)[0]
-        segment_ids = tf.concat([
-          tf.zeros([batch_size, self.max_arg_length], dtype=tf.int32),
-          tf.ones([batch_size, self.max_arg_length], dtype=tf.int32)
-        ], axis=1)
+      # if not self.is_finetunable_bert_embedding:
+      # additional context encoding with segment_ids and positional encoding
+      # ONLY when BERT is not being fine-tuned
+      batch_size = modeling.get_shape_list(input_concat, expected_rank=3)[0]
+      segment_ids = tf.concat([
+        tf.zeros([batch_size, self.max_arg_length], dtype=tf.int32),
+        tf.ones([batch_size, self.max_arg_length], dtype=tf.int32)
+      ], axis=1)
 
-        input_concat = self.encode_concat_context(
-          input_concat, segment_ids,
-          hidden_dropout_prob=self.hidden_dropout_prob, use_segment_ids=True,
-          use_position_embedding=True)
+      input_concat = self.encode_concat_context(
+        input_concat, segment_ids,
+        hidden_dropout_prob=self.hidden_dropout_prob, use_segment_ids=True,
+        use_position_embedding=True)
 
       # attention layers, for now keeping all encoder layers
       self.all_encoder_layers = \
@@ -385,6 +389,7 @@ class Attentional(Model):
 
     # self.train_op = \
     #   self.optimizer(self.learning_rate).minimize(self.loss, name="train_op")
+
     if self.optimizer_name == "adam" and self.num_warmup_steps > 0:
       tf.logging.info("Adam Weight Decay Optimizer")
       self.train_op = optimization.create_optimizer(
@@ -419,6 +424,7 @@ class Attentional(Model):
     arg1_attn_mask = arg1_mask
     arg2_attn_mask = arg2_mask
 
+    # TODO (May 11): do this in `PDTBProcessor` ################################
     if not arg1_attn_mask:
       arg1_attn_mask = []
 
@@ -442,6 +448,7 @@ class Attentional(Model):
           else:
             arg2_mask.append(1)
         arg2_attn_mask.append(arg2_mask)
+    ############################################################################
 
     ops = []
     for fetch_op in fetch_ops:
@@ -449,16 +456,38 @@ class Attentional(Model):
         ops.append(self.fetch_ops_dict[fetch_op])
       else:
         raise ValueError(
-          f"`fetch_ops` contains a `fetch_op` name {fetch_op} that is not understood")
+          f"`fetch_ops` contains a `fetch_op` name {fetch_op} that is not"
+          " understood")
 
-    feed_dict = {
-      self.arg1          : arg1,
-      self.arg2          : arg2,
-      self.conn          : conn,
-      self.label         : label_ids,
-      self.arg1_attn_mask: arg1_attn_mask,
-      self.arg2_attn_mask: arg2_attn_mask
-    }
+    if self.split_args_in_embedding:
+      src_batch_size = len(arg1)
+      tgt_batch_size = src_batch_size * 2
+
+      seq_length = len(arg1[0])
+
+      arg = np.zeros([tgt_batch_size, seq_length], dtype=np.float32)
+      arg[0::2] = arg1
+      arg[1::2] = arg2
+
+      arg_attn_mask = np.zeros([tgt_batch_size, seq_length], dtype=np.float32)
+      arg_attn_mask[0::2] = arg1_attn_mask
+      arg_attn_mask[1::2] = arg2_attn_mask
+
+      feed_dict = {
+        self.arg: arg,
+        self.conn: conn,
+        self.label: label_ids,
+        self.arg_attn_mask: arg_attn_mask
+      }
+    else:
+      feed_dict = {
+        self.arg1          : arg1,
+        self.arg2          : arg2,
+        self.conn          : conn,
+        self.label         : label_ids,
+        self.arg1_attn_mask: arg1_attn_mask,
+        self.arg2_attn_mask: arg2_attn_mask
+      }
 
     return ops, feed_dict
 

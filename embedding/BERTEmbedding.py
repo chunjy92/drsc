@@ -29,8 +29,7 @@ class BERTInputFeatures(object):
 
 
 class BERTEmbedding(Embedding):
-  """Todo (May 9):
-      1) eval during training
+  """Todo (May 11):
       2) split_arg_in_bert: whether to treat each arg as separate example
     """
   def __init__(self,
@@ -43,9 +42,9 @@ class BERTEmbedding(Embedding):
                truncation_mode="normal",
                do_lower_case=False,
                finetune_embedding=False,
+               split_args=False,
                is_training=False,
                padding_action='normal',
-               use_one_hot_embeddings=False,
                scope=None):
     self.model_dir = model_dir
     self.bert_config_file = bert_config_file
@@ -55,10 +54,9 @@ class BERTEmbedding(Embedding):
     self.max_arg_length = max_arg_length
     self.truncation_mode = truncation_mode
     self.do_lower_case = do_lower_case
+    self.split_args = split_args
     self.finetune_embedding = finetune_embedding
-    self.is_training = is_training
     self.padding_action = padding_action
-    self.use_one_hot_embeddings = use_one_hot_embeddings
 
     # Word-Piece tokenizer
     self.tokenizer = tokenization.FullTokenizer(
@@ -70,7 +68,9 @@ class BERTEmbedding(Embedding):
     self.bert_config = copy.deepcopy(
       modeling.BertConfig.from_json_file(self.bert_config_file))
 
-
+    if not is_training:
+      self.bert_config.hidden_dropout_prob = 0.0
+      self.bert_config.attention_probs_dropout_prob = 0.0
 
     self._embedding_table = None
     self._vocab = tokenization.load_vocab(self.vocab_file)
@@ -83,18 +83,15 @@ class BERTEmbedding(Embedding):
         (self.max_arg_length, self.bert_config.max_position_embeddings))
 
     if self.finetune_embedding:
-      self.build(scope)
+      self.build()
 
   ################################### BUILD ####################################
   def build_bert_model(self,
                        input_ids,
                        input_mask,
                        token_type_ids):
-    if not self.is_training:
-      self.bert_config.hidden_dropout_prob = 0.0
-      self.bert_config.attention_probs_dropout_prob = 0.0
 
-    with tf.variable_scope('bert', reuse=tf.AUTO_REUSE):
+    with tf.variable_scope('bert'):
       with tf.variable_scope("embeddings"):
         # Perform embedding lookup on the word ids.
         (embedding_output, _) = modeling.embedding_lookup(
@@ -102,8 +99,7 @@ class BERTEmbedding(Embedding):
             vocab_size=self.bert_config.vocab_size,
             embedding_size=self.bert_config.hidden_size,
             initializer_range=self.bert_config.initializer_range,
-            word_embedding_name="word_embeddings",
-            use_one_hot_embeddings=self.use_one_hot_embeddings
+            word_embedding_name="word_embeddings"
         )
 
         # Add positional embeddings and token type embeddings, then layer
@@ -157,9 +153,47 @@ class BERTEmbedding(Embedding):
     """
     return self.sequence_output
 
+  ################################### BUILD ####################################
   def build(self, scope=None):
+    if self.split_args:
+      self.build_single_arg(scope)
+    else:
+      self.build_two_args(scope)
 
+  def build_single_arg(self, scope=None):
+    tf.logging.debug("Building single arg pipeline in BERT Embedding")
+    self.arg = tf.placeholder(tf.int32, [None, self.max_arg_length],
+                              name='arg')
+    self.label = tf.placeholder(tf.int32, [None], name="label")
 
+    # TODO: max_len for conn???
+    self.conn = tf.placeholder(tf.int32, [None, self.max_arg_length],
+                               name="conn")
+
+    # placeholders for attention_mask
+    self.arg_attn_mask = tf.placeholder(
+      tf.int32, [None, self.max_arg_length], name="arg_attn_mask")
+
+    segment_ids = tf.zeros_like(self.arg, dtype=tf.int32)
+
+    self.build_bert_model(
+      self.arg, input_mask=self.arg_attn_mask, token_type_ids=segment_ids)
+
+    # [batch, arg_len, hidden_size]
+    bert_arg = self.get_sequence_output()
+
+    input_shape = modeling.get_shape_list(bert_arg, expected_rank=3)
+    batch_size = input_shape[0]
+    seq_length = input_shape[1]
+    width = input_shape[2]
+
+    self.bert_arg_concat = tf.reshape(bert_arg,
+                                      shape=[batch_size/2, seq_length*2, width])
+    self.bert_mask_concat = tf.reshape(self.arg_attn_mask,
+                                       shape=[batch_size/2, seq_length*2])
+
+  def build_two_args(self, scope=None):
+    tf.logging.debug("Building two args pipeline in BERT Embedding")
     self.arg1 = tf.placeholder(tf.int32, [None, self.max_arg_length],
                                name="arg1")
     self.arg2 = tf.placeholder(tf.int32, [None, self.max_arg_length],
@@ -176,19 +210,19 @@ class BERTEmbedding(Embedding):
     self.arg2_attn_mask = tf.placeholder(
       tf.int32, [None, self.max_arg_length], name="arg2_attn_mask")
 
-    with tf.variable_scope(scope, default_name="bert_embedding_model"):
-      arg_concat = tf.concat([self.arg1, self.arg2], axis=1)
-      self.bert_mask_concat = \
-        tf.concat([self.arg1_attn_mask, self.arg2_attn_mask], axis=1)
+    arg_concat = tf.concat([self.arg1, self.arg2], axis=1)
+    self.bert_mask_concat = \
+      tf.concat([self.arg1_attn_mask, self.arg2_attn_mask], axis=1)
 
-      segment_ids = tf.concat([
-        tf.zeros_like(self.arg1, dtype=tf.int32),  # Arg1: 0s
-        tf.ones_like(self.arg2, dtype=tf.int32)  # Arg2: 1s
-      ], axis=1)
+    segment_ids = tf.concat([
+      tf.zeros_like(self.arg1, dtype=tf.int32),  # Arg1: 0s
+      tf.ones_like(self.arg2, dtype=tf.int32)  # Arg2: 1s
+    ], axis=1)
 
     self.build_bert_model(
       arg_concat, input_mask=self.bert_mask_concat, token_type_ids=segment_ids)
 
+    # [batch, arg_len*2, hidden_size]
     self.bert_arg_concat = self.get_sequence_output()
 
   ########################### Finetunable BERT #################################
@@ -204,8 +238,9 @@ class BERTEmbedding(Embedding):
       tokens_a.insert(0, "[CLS]")
       tokens_a.append("[SEP]")
 
-      if len(tokens_b) > self.max_arg_length - 1:
-        tokens_b = tokens_b[0:(self.max_arg_length - 1)]
+      if len(tokens_b) > self.max_arg_length - 2:
+        tokens_b = tokens_b[0:(self.max_arg_length - 2)]
+      tokens_b.insert(0, "[CLS]")
       tokens_b.append("[SEP]")
 
       input_ids_a = self.tokenizer.convert_tokens_to_ids(tokens_a)
@@ -261,8 +296,7 @@ class BERTEmbedding(Embedding):
 
     model_fn = model_fn_builder(
       bert_config=self.bert_config,
-      init_checkpoint=self.init_checkpoint,
-      use_one_hot_embeddings=self.use_one_hot_embeddings
+      init_checkpoint=self.init_checkpoint
     )
 
     config = tf.ConfigProto()
@@ -309,6 +343,14 @@ class BERTEmbedding(Embedding):
     return self.bert_mask_concat
 
   ############################### PLACEHOLDERS #################################
+  def get_arg(self):
+    # only if self.split_arg == True
+    return self.arg
+
+  def get_arg_mask(self):
+    # only if self.split_arg == True
+    return self.arg_attn_mask
+
   def get_arg1(self):
     return self.arg1
 
@@ -328,8 +370,14 @@ class BERTEmbedding(Embedding):
     return self.arg2_attn_mask
 
   def get_all_placeholder_ops(self):
-    return self.arg1, self.arg2, self.conn, self.label, \
-           self.arg1_attn_mask, self.arg2_attn_mask
+    ret = []
+    if self.split_args:
+      ret = [self.arg, self.conn, self.label, self.arg_attn_mask]
+    else:
+      ret = [self.arg1, self.arg2, self.conn, self.label,
+             self.arg1_attn_mask, self.arg2_attn_mask]
+
+    return ret
 
   ################################# POSTPROCESS ################################
   # def postprocess_batch_ids(self, batch):
@@ -457,7 +505,7 @@ def model_fn_builder(bert_config, init_checkpoint, use_one_hot_embeddings):
         input_ids=input_ids,
         input_mask=input_mask,
         token_type_ids=segment_ids,
-        use_one_hot_embeddings=use_one_hot_embeddings)
+        use_one_hot_embeddings=False)
 
     if mode != tf.estimator.ModeKeys.PREDICT:
       raise ValueError("Only PREDICT modes are supported: %s" % (mode))

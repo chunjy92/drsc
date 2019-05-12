@@ -38,7 +38,8 @@ EMBEDDINGS = ['random_init',
               'googlenews']
 TRUNC_MODES = ['normal', 'reverse', 'reverse_arg1', 'reverse_arg2']
 POOLING_ACTIONS = ['sum', 'mean', 'max', 'concat', 'matmul']
-CLS_ACTIONS = ['first_cls', 'second_cls', 'new_cls']
+CLS_ACTIONS = ['first_cls', 'second_cls', 'new_cls', 'concat',
+               'sum', 'mean', 'max', 'matmul']
 CONN_ACTIONS = []
 PADDING_ACTIONS = ['normal', 'pad_left_arg1']
 OPTIMIZERS = ['sgd', 'adam', 'adagrad']
