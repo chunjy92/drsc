@@ -16,7 +16,7 @@ parser.register("type", "bool", lambda v: v.lower() == "true")
 parser.add_argument("--model_dir", required=True,
                     help="path to model output directory")
 
-parser.add_argument("--model", type=str.lower, default='mlp',
+parser.add_argument("--model", type=str.lower, default='self_attn',
                     choices=const.MODELS, help="which model to use")
 
 parser.add_argument("--embedding", type=str, default='bert',

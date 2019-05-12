@@ -5,19 +5,24 @@ __author__ = 'Jayeol Chun'
 
 
 class PDTBRelation(object):
-  def __init__(self, guid, exid, arg1, arg2, label, label_list, conn=None):
+  def __init__(self, guid, exid, arg1, arg2, conn, label, label_list,
+               arg1_mask, arg2_mask):
     # identification
-    self.guid = guid # {dataset_type}-{doc_id}-{unique_id of the relation}
+    self.guid = guid # {dataset_type}-{unique_id of the relation}
     self.exid = exid # {%d th example in selected dataset}
 
-    # data, list of tokens
+    # list of tokens (or a string if BERTEmbedding)
     self.arg1 = arg1
     self.arg2 = arg2
     self.conn = conn
 
-    # one-hot label
+    # integer label id
     self.label = label
     self.label_list = label_list
+
+    # attention masks
+    self.arg1_attn_mask = arg1_mask
+    self.arg2_attn_mask = arg2_mask
 
   def __repr__(self):
     if isinstance(self.arg1, list):

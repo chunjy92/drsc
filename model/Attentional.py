@@ -3,13 +3,14 @@
 import numpy as np
 import tensorflow as tf
 
-from bert import modeling, optimization
+from bert import modeling
 from .Model import Model
 
 __author__ = 'Jayeol Chun'
 
 
 class Attentional(Model):
+  ################################### BUILD ####################################
   def build_attn_layer(self,
                        input_tensor,
                        attn_mask_concat,
@@ -18,7 +19,7 @@ class Attentional(Model):
                        size_per_head=512,
                        attention_probs_dropout_prob=0.1,
                        initializer_range=0.02,
-                       do_return_2d_tensor=None):
+                       do_return_2d_tensor=False):
     # TODO (May 5): To capture each softmax output, will need a modified
     #  `attention_layer`
     input_tensor_shape = modeling.get_shape_list(input_tensor, expected_rank=3)
@@ -293,20 +294,18 @@ class Attentional(Model):
     with tf.variable_scope("attentional_model"):
       self.build_input_pipeline()
 
-      if self.is_finetunable_bert_embedding:
+      # if self.is_finetunable_bert_embedding:
+      if self.is_bert_embedding:
         input_concat = self.embedding.get_arg_concat()
         mask_concat = self.embedding.get_attn_mask()
 
       else:
-        if self.is_bert_embedding:
-          arg1, arg2 = self.arg1, self.arg2
-        else:
-          self.embedding_table = self.init_embedding(self.embedding_placeholder)
+        self.embedding_table = self.init_embedding(self.embedding_placeholder)
 
-          # embedding lookup
-          with tf.variable_scope("embedding"):
-            arg1 = tf.nn.embedding_lookup(self.embedding_table, self.arg1)
-            arg2 = tf.nn.embedding_lookup(self.embedding_table, self.arg2)
+        # embedding lookup
+        with tf.variable_scope("embedding"):
+          arg1 = tf.nn.embedding_lookup(self.embedding_table, self.arg1)
+          arg2 = tf.nn.embedding_lookup(self.embedding_table, self.arg2)
 
         input_concat = tf.concat([arg1, arg2], axis=1)
         mask_concat = tf.concat([self.arg1_attn_mask, self.arg2_attn_mask],
@@ -323,7 +322,7 @@ class Attentional(Model):
             use_bias=False
           )
 
-      # if not self.is_finetunable_bert_embedding:
+      # # if not self.is_finetunable_bert_embedding:
       # additional context encoding with segment_ids and positional encoding
       # ONLY when BERT is not being fine-tuned
       batch_size = modeling.get_shape_list(input_concat, expected_rank=3)[0]
@@ -355,55 +354,17 @@ class Attentional(Model):
           activation=tf.tanh,
           kernel_initializer=modeling.create_initializer())
 
-    # loss function
-    hidden_size = pooled_output.shape[-1].value
 
-    output_weights = tf.get_variable(
-      "output_weights", [self.num_labels, hidden_size],
-      initializer=tf.truncated_normal_initializer(stddev=0.02))
-
-    output_bias = tf.get_variable(
-      "output_bias", [self.num_labels], initializer=tf.zeros_initializer())
-
-    with tf.variable_scope("loss"):
-      if self.is_training:
-        # I.e., 0.1 dropout
-        pooled_output = tf.nn.dropout(pooled_output, keep_prob=0.9)
-
-      logits = tf.matmul(pooled_output, output_weights, transpose_b=True)
-      logits = tf.nn.bias_add(logits, output_bias)
-
-      # self.per_example_loss = tf.nn.softmax_cross_entropy_with_logits_v2(
-      #   labels=one_hot_labels, logits=logits)
-      self.per_example_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
-        labels=self.label, logits=logits, name="per_loss")
-      self.loss = tf.reduce_mean(self.per_example_loss, name="mean_loss")
-
-      # tf.summary.scalar('loss', self.loss)
-      # tf.summary.scalar('acc', self.acc)
+    logits = self.build_loss_op(pooled_output)
 
     self.preds = tf.cast(tf.argmax(logits, axis=-1), tf.int32, name="preds")
     self.correct = tf.cast(tf.equal(self.preds, self.label), "float",
                            name="correct")
     self.acc = tf.reduce_mean(self.correct, name="acc")
 
-    # self.train_op = \
-    #   self.optimizer(self.learning_rate).minimize(self.loss, name="train_op")
+    self.train_op = self.build_train_op()
 
-    if self.optimizer_name == "adam" and self.num_warmup_steps > 0:
-      tf.logging.info("Adam Weight Decay Optimizer")
-      self.train_op = optimization.create_optimizer(
-        loss=self.loss, init_lr=self.learning_rate,
-        num_train_steps=self.num_train_steps,
-        num_warmup_steps=self.num_warmup_steps,
-        use_tpu=False
-      )
-    else:
-      optimizer = self.get_optimizer(self.optimizer_name)
-      tf.logging.info(f"{self.optimizer_name.capitalize()} Optimizer")
-      self.train_op = optimizer(self.learning_rate).minimize(self.loss,
-                                                             name='train_op')
-
+  ################################## GETTERS ###################################
   def get_sequence_output(self):
     """Gets final hidden layer of encoder.
 
@@ -417,52 +378,12 @@ class Attentional(Model):
     return self.all_encoder_layers
 
   ################################# POSTPROCESS ################################
-  def postprocess_batch_ids(self, batch, fetch_ops):
-
+  def postprocess_batch(self, batch, fetch_ops):
     arg1, arg2, conn, label_ids, arg1_mask, arg2_mask = batch
-
-    arg1_attn_mask = arg1_mask
-    arg2_attn_mask = arg2_mask
-
-    # TODO (May 11): do this in `PDTBProcessor` ################################
-    if not arg1_attn_mask:
-      arg1_attn_mask = []
-
-      for arg1_ids in arg1:
-        arg1_mask = []
-        for arg1_id in arg1_ids:
-          if arg1_id == 0: # PAD token id: 0
-            arg1_mask.append(0)
-          else:
-            arg1_mask.append(1)
-        arg1_attn_mask.append(arg1_mask)
-
-    if not arg2_attn_mask:
-      arg2_attn_mask = []
-
-      for arg2_ids in arg2:
-        arg2_mask = []
-        for arg2_id in arg2_ids:
-          if arg2_id == 0: # PAD token id: 0
-            arg2_mask.append(0)
-          else:
-            arg2_mask.append(1)
-        arg2_attn_mask.append(arg2_mask)
-    ############################################################################
-
-    ops = []
-    for fetch_op in fetch_ops:
-      if fetch_op in self.fetch_ops_dict:
-        ops.append(self.fetch_ops_dict[fetch_op])
-      else:
-        raise ValueError(
-          f"`fetch_ops` contains a `fetch_op` name {fetch_op} that is not"
-          " understood")
 
     if self.split_args_in_embedding:
       src_batch_size = len(arg1)
       tgt_batch_size = src_batch_size * 2
-
       seq_length = len(arg1[0])
 
       arg = np.zeros([tgt_batch_size, seq_length], dtype=np.float32)
@@ -470,8 +391,8 @@ class Attentional(Model):
       arg[1::2] = arg2
 
       arg_attn_mask = np.zeros([tgt_batch_size, seq_length], dtype=np.float32)
-      arg_attn_mask[0::2] = arg1_attn_mask
-      arg_attn_mask[1::2] = arg2_attn_mask
+      arg_attn_mask[0::2] = arg1_mask
+      arg_attn_mask[1::2] = arg2_mask
 
       feed_dict = {
         self.arg: arg,
@@ -485,64 +406,10 @@ class Attentional(Model):
         self.arg2          : arg2,
         self.conn          : conn,
         self.label         : label_ids,
-        self.arg1_attn_mask: arg1_attn_mask,
-        self.arg2_attn_mask: arg2_attn_mask
+        self.arg1_attn_mask: arg1_mask,
+        self.arg2_attn_mask: arg2_mask
       }
 
+    ops = self.fetch_ops(fetch_op_names=fetch_ops)
+
     return ops, feed_dict
-
-  def postprocess_batch_vals(self, batch, values, fetch_ops,
-                             l2i_mapping=None,
-                             exid_to_feature_mapping=None):
-    # tedious decoupling
-    label_ids = []
-    batch_bert_outputs = []
-    arg1_mask = []
-    arg2_mask = []
-
-    # TODO (May 5): should move this to BERTEmbedding, as `convert_to_vals` or -
-    #   at least part of it.
-    for batch_example in batch:
-      # exid indexes into values to fetch correct values
-      batch_exid = batch_example.exid
-
-      batch_bert_outputs.append(values[batch_exid])
-
-      # label
-      label_ids.append(l2i_mapping(batch_example.label))
-
-      batch_feature = exid_to_feature_mapping[batch_exid]
-
-      batch_arg1_feature = batch_feature[0]
-      batch_arg1_mask = batch_arg1_feature.input_mask
-      arg1_mask.append(batch_arg1_mask)
-
-      batch_arg2_feature = batch_feature[1]
-      batch_arg2_mask = batch_arg2_feature.input_mask
-      arg2_mask.append(batch_arg2_mask)
-
-    # prepare bert output: [batch, total_seq_length, bert_hidden_size]
-    batch_bert_outputs = np.asarray(batch_bert_outputs)
-    total_seq_length = batch_bert_outputs.shape[1]
-    assert total_seq_length == self.max_arg_length * 2, \
-      "Sequence length mismatch between BERT output and parameter"
-
-    arg1 = batch_bert_outputs[:, :self.max_arg_length, :]
-    arg2 = batch_bert_outputs[:, self.max_arg_length:, :]
-
-    # TODO: connectives
-    # since we don't use connectives, set them 0 for now
-    conn = np.zeros([len(batch),
-                     self.max_arg_length,
-                     batch_bert_outputs.shape[-1]])
-
-    feed_dict = {
-      self.arg1          : arg1,
-      self.arg2          : arg2,
-      self.conn          : conn,
-      self.label         : label_ids,
-      self.arg1_attn_mask: arg1_mask,
-      self.arg2_attn_mask: arg2_mask
-    }
-
-    return feed_dict

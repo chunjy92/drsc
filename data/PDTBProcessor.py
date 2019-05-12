@@ -95,7 +95,7 @@ class PDTBProcessor(object):
         if example.conn:
           vocab.update(example.conn)
 
-    return list(vocab)
+    return sorted(vocab)
 
   def compile_vocab(self, instances=None):
     """Collects unique vocab from training instances"""
@@ -182,14 +182,20 @@ class PDTBProcessor(object):
       # relation identifier
       doc_id = rel[const.DOC_ID]
       unique_id = rel[const.REL_ID]
-      # guid = f"{dataset_type}-{doc_id}-{unique_id}"
       guid = f"{dataset_type}-{unique_id}"
 
+      # relation type check
       rel_type = rel[const.TYPE].lower()
-      if self.sense_type != "all" and rel_type != self.sense_type:
-        continue
+      if self.sense_type != "all":
+        if self.sense_type == 'non-explicit':
+          if rel_type == 'explicit':
+            continue
+        else:
+          if self.sense_type != rel_type:
+            continue
 
       tok_data = [None, None, None]
+      tok_mask = [None, None]
       for j, token_type in enumerate([const.ARG1, const.ARG2, const.CONN]):
         # if char_span_list is empty for that token_type, no tokens exist
         # in that case, the default value of `None` is retained
@@ -206,39 +212,37 @@ class PDTBProcessor(object):
 
             tokens.append(gold_token)
 
-          # truncation
-          # NOTE: Even if we use BERT, BERT's WordPiece tokenizer will ALWAYS
-          # either (1) produce a same number of tokens as original gold tokens,
-          # or (2) produce a larger number of tokens due to sub-word tokens, so
-          # we are fine enforcing max_length here.
-          if self.truncation_mode == 'normal':
-            tokens = tokens[:self.max_arg_length]
-          elif self.truncation_mode == 'reverse':
-            tokens = tokens[-self.max_arg_length:]
-          else:
-            raise NotImplementedError(
-              "Currently, only `normal` and `reverse` truncation modes are "
-              "supported")
-
           if for_bert_embedding:
-            # for compatibility, since BERT expects a string.
+            # for compatibility, since BERT expects a string. For truncation,
+            # padding and masking, see `convert_to_ids` in `BERTEmbedding.py`
             tokens = " ".join(tokens)
           else:
+            if self.truncation_mode == 'normal':
+              tokens = tokens[:self.max_arg_length]
+            else:
+              tokens = tokens[-self.max_arg_length:]
+
             # if less than max_arg_length, pad up with _PAD_
             num_pad = self.max_arg_length - len(tokens)
 
+            mask = []
             if self.padding_action == "pad_left_arg1" and \
                     token_type==const.ARG1:
               # pad at the beginning of tokens for arg1
-              # must enforce: the tokens should be from Arg1
               tokens = [const.PAD] * num_pad + tokens
+              mask = [0] * num_pad + [1] * len(tokens)
             else:
               # pad at the end of tokens
               tokens += [const.PAD] * num_pad
+              mask = [1] * len(tokens) + [0] * num_pad
+
+            if token_type in [const.ARG1, const.ARG2]:
+              tok_mask[j] = mask
 
           tok_data[j] = tokens
 
       arg1, arg2, conn = tok_data
+      arg1_mask, arg2_mask = tok_mask
 
       sense_list = rel[const.SENSE]
 
@@ -246,45 +250,44 @@ class PDTBProcessor(object):
         sense = sense_list[0]
         sense = to_level(sense, level=self.sense_level)
 
-        # sense_level = get_level(sense)
-        # if self.drop_partial_data and sense_level != self.sense_level:
-        #   continue
-
         # TODO: Only if dataset is `implicit`. Needs an update later for other
         #  dataset types or somehow make them compatible with this
         #  implementation
         if sense not in self.labels:
           continue
 
-        if rel_type == self.sense_type or self.sense_type == 'all':
+        input_example = PDTBRelation(
+          guid=guid, exid=exid, arg1=arg1, arg2=arg2, conn=conn, label=sense,
+          label_list=sense_list, arg1_mask=arg1_mask, arg2_mask=arg2_mask)
+        examples.append(input_example)
+
+        if exid < 5 and dataset_type=='train':
+          tf.logging.info(input_example)
+
+        exid += 1
+
+      elif self.multiple_senses_action == "duplicate":
+        for sense in sense_list:
+          sense = to_level(sense, level=self.sense_level)
+
+          # TODO: Only if dataset is `implicit`. Needs an update later for other
+          #  dataset types or somehow make them compatible with this
+          #  implementation
+          if sense not in self.labels:
+            continue
+
           input_example = PDTBRelation(
             guid=guid, exid=exid, arg1=arg1, arg2=arg2, conn=conn, label=sense,
-            label_list=sense_list)
+            label_list=sense_list, arg1_mask=arg1_mask, arg2_mask=arg2_mask)
           examples.append(input_example)
 
           if exid < 5 and dataset_type=='train':
             tf.logging.info(input_example)
+
           exid += 1
 
-      else:
-        raise NotImplementedError(
-          "Currently, only `pick_first` for `multiple_senses_action")
-      #
-      # elif self.multiple_senses_action == "duplicate":
-      #   raise NotImplementedError()
-      #   # for sense in sense_list:
-      #   #   if rel_type == self.sense_type or self.sense_type == 'all':
-      #   #     input_example = PDTBRelation(
-      #   #       guid=guid, exid=exid, arg1=arg1, arg2=arg2, conn=conn,
-      #   #       label=sense, label_list=sense_list)
-      #   #     examples.append(input_example)
-      #   #     if exid < 10 and dataset_type=='train':
-      #   #       tf.logging.info(input_example)
-      #   #     exid += 1
-      #
-      # else: # smart picking by majority (?)
-      #   raise NotImplementedError(
-      #     "")
+      else: # smart picking by majority (?)
+        raise NotImplementedError("")
 
     # cache
     if dataset_type not in self._cached:

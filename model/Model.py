@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 
 import tensorflow as tf
 
+from bert import optimization
 from utils import const
 
 __author__ = 'Jayeol Chun'
@@ -86,14 +87,72 @@ class Model(ABC):
   def build(self, scope=None):
     pass
 
+  def build_loss_op(self, output):
+    # loss function
+    hidden_size = output.shape[-1].value
+
+    output_weights = tf.get_variable(
+      "output_weights", [self.num_labels, hidden_size],
+      initializer=tf.truncated_normal_initializer(stddev=0.02))
+
+    output_bias = tf.get_variable(
+      "output_bias", [self.num_labels], initializer=tf.zeros_initializer())
+
+    with tf.variable_scope("loss"):
+      if self.is_training:
+        # I.e., 0.1 dropout
+        output = tf.nn.dropout(output, keep_prob=0.9)
+
+      logits = tf.matmul(output, output_weights, transpose_b=True)
+      logits = tf.nn.bias_add(logits, output_bias)
+
+      self.per_example_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
+        labels=self.label, logits=logits, name="per_loss")
+      self.loss = tf.reduce_mean(self.per_example_loss, name="mean_loss")
+
+    return logits
+
+  def build_train_op(self):
+    if self.is_bert_embedding and not self.finetune_embedding:
+      # remove pre-trained bert parameters from `TRAINABLE_VARIABLES`
+      var_list = tf.trainable_variables()
+      tf.get_default_graph().clear_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+
+      # trainable_vars_no_bert = []
+      for var in var_list:
+        if not var.name.startswith("bert"):
+          tf.add_to_collection(tf.GraphKeys.TRAINABLE_VARIABLES, var)
+
+    if self.optimizer_name == "adam" and self.num_warmup_steps > 0:
+      tf.logging.info("Adam Weight Decay Optimizer")
+      train_op = optimization.create_optimizer(
+        loss=self.loss, init_lr=self.learning_rate,
+        num_train_steps=self.num_train_steps,
+        num_warmup_steps=self.num_warmup_steps,
+        use_tpu=False
+      )
+    else:
+      optimizer = self.get_optimizer(self.optimizer_name)
+      tf.logging.info(f"{self.optimizer_name.capitalize()} Optimizer")
+      train_op = optimizer(self.learning_rate).minimize(self.loss,
+                                                        name='train_op')
+    return train_op
+
   ############################### POSTPROCESS ##################################
   @abstractmethod
-  def postprocess_batch_ids(self, batch, fetch_ops):
+  def postprocess_batch(self, batch, fetch_ops):
     pass
 
-  @abstractmethod
-  def postprocess_batch_vals(self, batch, values, fetch_ops, **kwargs):
-    pass
+  def fetch_ops(self, fetch_op_names):
+    ops = []
+    for fetch_op in fetch_op_names:
+      if fetch_op in self.fetch_ops_dict:
+        ops.append(self.fetch_ops_dict[fetch_op])
+      else:
+        raise ValueError(
+          f"`fetch_ops` contains a `fetch_op` name {fetch_op} that is not"
+          " understood")
+    return ops
 
   ############################## PLACEHOLDER OPS ###############################
   def init_embedding(self, placeholder):
@@ -111,7 +170,8 @@ class Model(ABC):
   def build_input_pipeline(self):
     """Build all placeholder ops"""
 
-    if self.is_finetunable_bert_embedding:
+    # if self.is_finetunable_bert_embedding:
+    if self.is_bert_embedding:
       placeholer_ops = self.embedding.get_all_placeholder_ops()
 
       if self.split_args_in_embedding:
@@ -126,29 +186,6 @@ class Model(ABC):
         self.label = placeholer_ops[3]
         self.arg1_attn_mask = placeholer_ops[4]
         self.arg2_attn_mask = placeholer_ops[5]
-
-      self.embedding_placeholder = None
-      self.embedding_table = None
-
-    elif self.is_bert_embedding:
-      self.arg1 = tf.placeholder(
-        tf.float32, [None, self.max_arg_length, self.word_vector_width],
-        name="arg1")
-      self.arg2 = tf.placeholder(
-        tf.float32, [None, self.max_arg_length, self.word_vector_width],
-        name="arg2")
-      self.label = tf.placeholder(tf.int32, [None], name="label")
-
-      # TODO: max_len for conn???
-      self.conn = tf.placeholder(
-        tf.float32, [None, self.max_arg_length, self.word_vector_width],
-        name="conn")
-
-      # placehodlers for attention_mask
-      self.arg1_attn_mask = tf.placeholder(
-        tf.int32, [None, self.max_arg_length], name="arg1_attn_mask")
-      self.arg2_attn_mask = tf.placeholder(
-        tf.int32, [None, self.max_arg_length], name="arg2_attn_mask")
 
       self.embedding_placeholder = None
       self.embedding_table = None

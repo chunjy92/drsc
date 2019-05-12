@@ -7,6 +7,7 @@ from abc import abstractmethod, ABC
 
 import tensorflow as tf
 
+from bert import modeling
 from data import PDTBProcessor
 
 __author__ = 'Jayeol Chun'
@@ -72,44 +73,64 @@ class Experiment(ABC):
     pass
 
   ################################### UTIL #####################################
+  def init_bert_from_checkpoint(self):
+    tvars = tf.trainable_variables()
+
+    if self.hp.embedding == "bert":
+      initialized_variable_names = []
+      (assignment_map, initialized_variable_names) = \
+        modeling.get_assignment_map_from_checkpoint(
+          tvars, self.embedding.init_checkpoint)
+
+      tf.train.init_from_checkpoint(
+        self.embedding.init_checkpoint, assignment_map)
+
+      tf.logging.info("**** Trainable Variables ****")
+      for var in tvars:
+        init_string = ""
+        if var.name in initialized_variable_names:
+          init_string = ", *INIT_FROM_CKPT*"
+        tf.logging.info("  name = %s, shape = %s%s", var.name,
+                        var.shape, init_string)
+
   def batchify(self, examples, batch_size, do_shuffle=False):
     if do_shuffle:
       random.shuffle(examples)
 
     batches = []
     for start in range(0, len(examples), batch_size):
-      batch = examples[start:start + batch_size]
+      batch = examples[start:start+batch_size]
       batches.append(batch)
 
     return batches
+
+  def display_log(self, pred_counter, msg_header, mean_loss=None,
+                  mean_acc=None):
+    for key in pred_counter.keys():
+      tf.logging.info(" {:3d}: {}".format(pred_counter[key], self.labels[key]))
+
+    msg = msg_header
+
+    if mean_loss:
+      msg += " loss: {:.3f}".format(mean_loss)
+
+    if mean_acc:
+      msg += " acc: {:.3f}".format(mean_acc)
+
+    tf.logging.info(msg)
 
   #################################### RUN #####################################
   def run(self):
     """Defines overall execution scheme consisting of 3 stages: train, eval and
     predict
-
-    Each function has two versions: `{}_from_ids` and `{}_from_vals`.
-
-    (1) `{}_from_ids` is when the loaded embedding is passed directly to the
-        model, where values for each instance is retrieved through
-        `tf.nn.embedding_lookup`.
-
-    (2) `{}_from_vals` is when each data instance is converted into values
-        before entering the TF computation graph, essentially equivalent to
-        manual `tf.nn.embedding_lookup`. This is necessary when `self.embedding`
-        is `BERTEmbedding` which will create a large output for each instance.
-        Besides, each token will have different values in different contexts,
-        so the conventional retrieval methods through id look-up doesn't work.
     """
     if self.hp.do_train:
       self.train()
-
-    self.processor.remove_cache_by_key('train')
+      self.processor.remove_cache_by_key('train')
 
     if self.hp.do_eval:
       self.eval()
-
-    self.processor.remove_cache_by_key('dev')
+      self.processor.remove_cache_by_key('dev')
 
     if self.hp.do_predict:
       self.predict()

@@ -8,7 +8,6 @@ import tensorflow as tf
 
 import embedding
 import model
-from bert import modeling
 from utils import const
 from .Experiment import Experiment
 
@@ -139,63 +138,33 @@ class DRSCExperiment(Experiment):
     tf.logging.info("***** Begin Train *****")
 
     # data
-    train_fn = None
-    if self.hp.embedding == 'bert' and not self.hp.finetune_embedding:
+    if self.hp.embedding == 'bert':
       examples = self.processor.get_train_examples(for_bert_embedding=True)
-      train_fn = self.train_from_vals
     else:
-      if self.hp.embedding == 'bert':
-        examples = self.processor.get_train_examples(for_bert_embedding=True)
-      else:
-        examples = self.processor.get_train_examples()
-      train_fn = self.train_from_ids
-
-    self.processor.remove_cache_by_key('train')
+      examples = self.processor.get_train_examples()
 
     self.num_train_steps = int(
       len(examples) / self.hp.batch_size * self.hp.num_epochs)
     self.num_warmup_steps = \
       int(self.num_train_steps * self.hp.warmup_proportion)
 
-    train_fn(examples)
-
-  def train_from_ids(self, examples):
     global_step = 0
     for epoch in range(self.hp.num_epochs):
-
       tf.reset_default_graph()
       with tf.Graph().as_default() as graph:
         with tf.Session(config=self.sess_config, graph=graph) as sess:
           model_ckpt = tf.train.latest_checkpoint(self.hp.model_dir)
 
           self.init_all(is_training=True)
+          # for TensorBoard
+          self.summary_op = tf.summary.merge_all()
+
           init = tf.global_variables_initializer()
 
+          saver = None
           if not model_ckpt:
-            # for TensorBoard
-            self.summary_op = tf.summary.merge_all()
-
             saver = tf.train.Saver()
-
-            tvars = tf.trainable_variables()
-
-            if self.hp.embedding == "bert" and self.hp.finetune_embedding:
-              initialized_variable_names = []
-              (assignment_map, initialized_variable_names) = \
-                modeling.get_assignment_map_from_checkpoint(
-                  tvars, self.embedding.init_checkpoint)
-
-              tf.train.init_from_checkpoint(
-                self.embedding.init_checkpoint, assignment_map)
-
-              tf.logging.info("**** Trainable Variables ****")
-              for var in tvars:
-                init_string = ""
-                if var.name in initialized_variable_names:
-                  init_string = ", *INIT_FROM_CKPT*"
-                tf.logging.info("  name = %s, shape = %s%s", var.name,
-                                var.shape, init_string)
-
+            self.init_bert_from_checkpoint()
           else:
             # load from checkpoint
             saver = tf.train.import_meta_graph(self.model_ckpt_path+".meta")
@@ -204,75 +173,52 @@ class DRSCExperiment(Experiment):
           # run init ops
           sess.run(init)
           if self.hp.embedding != 'bert':
-            # no embedding lookup necessary for bert embedding
             sess.run(self.model.embedding_init_op,
                      feed_dict={
                        self.model.embedding_placeholder: self.embedding_table})
 
-          feat_batches = self.batchify(examples,
-                                       batch_size=self.hp.batch_size,
-                                       do_shuffle=True)
+          feat_batches = self.batchify(examples, self.hp.batch_size, True)
           num_batches = len(feat_batches)
           tf.logging.info(f"Created {num_batches} batches.")
 
+          all_preds = []
+          all_correct = []
+          all_loss = []
+
           for i, batch in enumerate(feat_batches):
             batch = self.embedding.convert_to_ids(batch, self.l2i)
-            fetch_ops = ['train_op', 'preds', 'mean_loss', 'acc']
+            fetch_ops = ['train_op', 'preds', 'per_loss', 'correct']
 
-            ops, feed_dict = \
-              self.model.postprocess_batch_ids(batch, fetch_ops=fetch_ops)
+            ops, feed_dict = self.model.postprocess_batch(
+              batch, fetch_ops=fetch_ops)
+            _, preds, per_loss, correct = sess.run(
+              ops, feed_dict=feed_dict)
 
-            _, preds, loss, acc = sess.run(ops, feed_dict=feed_dict)
             # self.summary_writer.add_summary(summary, global_step)
             global_step += 1
 
-            if (i+1) % self.hp.log_every == 0:
-              c = Counter(preds)
-              for key in c.keys():
-                tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
+            all_preds.extend(preds)
+            all_loss.extend(per_loss)
+            all_correct.extend(correct)
 
-              tf.logging.info(
-                "[Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
-                  epoch, i+1, num_batches, loss, acc))
+            if (i+1) % self.hp.log_every == 0:
+              c = Counter(all_preds)
+
+              mean_loss = np.mean(all_loss)
+              mean_acc = np.mean(all_correct)
+
+              msg_header = \
+                "[Epoch {} Batch {}/{}]".format(epoch, i+1, num_batches)
+              self.display_log(c, msg_header, mean_loss, mean_acc)
+
+              all_preds = []
+              all_correct = []
+              all_loss = []
 
           tf.logging.info("Saving model parameters")
           saver.save(sess, self.model_ckpt_path)
 
       self.eval()
-
-
-  def train_from_vals(self, examples):
-
-    embedding_res = self.embedding.convert_to_values(examples)
-    bert_outputs, exid_to_feature_mapping = embedding_res
-
-    global_step = 0
-    for epoch in range(self.hp.num_epochs):
-      bert_batches = self.batchify(examples,
-                                   batch_size=self.hp.batch_size,
-                                   do_shuffle=True)
-      num_batches = len(bert_batches)
-      tf.logging.info(f"Created {num_batches} batches.")
-
-      for i, batch in enumerate(bert_batches):
-        feed_dict = self.model.postprocess_batch_vals(
-          batch, values=bert_outputs, l2i_mapping=self.l2i,
-          exid_to_feature_mapping=exid_to_feature_mapping)
-
-        _, preds, loss, acc, summary = sess.run(
-          [self.model.train_op, self.model.preds, self.model.loss,
-           self.model.acc, self.summary_op], feed_dict=feed_dict)
-        self.summary_writer.add_summary(summary, global_step)
-        global_step += 1
-
-        if (i+1) % self.hp.log_every == 0:
-          c = Counter(preds)
-          for key in c.keys():
-            tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
-
-          tf.logging.info(
-            "[TRAIN Epoch {} Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
-              epoch, i+1, num_batches, loss, acc))
 
   ################################### EVAL #####################################
   def eval(self):
@@ -280,16 +226,10 @@ class DRSCExperiment(Experiment):
 
     tf.logging.info("***** Begin Eval *****")
 
-    eval_fn = None
-    if self.hp.embedding == 'bert' and not self.hp.finetune_embedding:
+    if self.hp.embedding == "bert":
       examples = self.processor.get_dev_examples(for_bert_embedding=True)
-      eval_fn = self.eval_from_vals
     else:
-      if self.hp.embedding == "bert":
-        examples = self.processor.get_dev_examples(for_bert_embedding=True)
-      else:
-        examples = self.processor.get_dev_examples()
-      eval_fn = self.eval_from_ids
+      examples = self.processor.get_dev_examples()
 
     # build graph
     tf.reset_default_graph()
@@ -298,98 +238,38 @@ class DRSCExperiment(Experiment):
         self.init_all(is_training=False)
 
         saver = tf.train.Saver()
-
         saver.restore(sess, self.model_ckpt_path)
-        eval_fn(examples, sess)
 
-  def eval_from_ids(self, examples, sess):
+        example_batches = self.batchify(examples, self.hp.batch_size, False)
+        num_batches = len(example_batches)
+        tf.logging.info(f"Created {num_batches} batches.")
 
-    example_batches = self.batchify(examples,
-                                    batch_size=self.hp.batch_size,
-                                    do_shuffle=False)
-    num_batches = len(example_batches)
-    tf.logging.info(f"Created {num_batches} batches.")
+        all_correct = []
+        all_loss = []
+        all_counter = Counter()
 
-    all_correct = []
-    all_loss = []
-    all_counter = Counter()
-
-    for i, batch in enumerate(example_batches):
-      batch = self.embedding.convert_to_ids(batch, self.l2i)
-      fetch_ops = ['preds', 'per_loss', 'mean_loss', 'correct', 'acc']
-      ops, feed_dict = self.model.postprocess_batch_ids(batch,
+        for i, batch in enumerate(example_batches):
+          batch = self.embedding.convert_to_ids(batch, self.l2i)
+          fetch_ops = ['preds', 'per_loss', 'mean_loss', 'correct', 'acc']
+          ops, feed_dict = self.model.postprocess_batch(batch,
                                                         fetch_ops=fetch_ops)
+          preds, per_example_loss, loss, correct, acc = \
+            sess.run(ops, feed_dict=feed_dict)
 
-      preds, per_example_loss, loss, correct, acc = \
-        sess.run(ops, feed_dict=feed_dict)
+          # accumulate losses and prediction evaluation
+          all_loss.extend(per_example_loss)
+          all_correct.extend(correct)
 
-      # accumulate losses and prediction evaluation
-      all_loss.extend(per_example_loss)
-      all_correct.extend(correct)
+          c = Counter(preds)
+          all_counter.update(c)
 
-      c = Counter(preds)
-      all_counter.update(c)
-      for key in c.keys():
-        tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
+          msg_header = "[EVAL Batch {}/{}]".format(i+1, num_batches)
+          self.display_log(c, msg_header, loss, acc)
 
-      tf.logging.info(
-        "[EVAL Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
-          i + 1, num_batches, loss, acc))
-
-    tf.logging.info("[EVAL FINAL] loss: {:.3f} acc: {:.3f}".format(
-      np.mean(all_loss), np.mean(all_correct)))
-
-    # all pred outputs for dev set
-    for key in all_counter.keys():
-      tf.logging.info(" {:3d}: {}".format(all_counter[key], self.labels[key]))
-
-  def eval_from_vals(self, examples, sess):
-    embedding_res = self.embedding.convert_to_values(examples)
-    bert_outputs, exid_to_feature_mapping = embedding_res
-
-    example_batches = self.batchify(examples,
-                                    batch_size=self.hp.batch_size,
-                                    do_shuffle=False)
-    num_batches = len(example_batches)
-    tf.logging.info(f"Created {num_batches} batches.")
-
-    # collect each prediction output result, where 0: incorrect and 1: correct
-    # also collect loss associated with each prediction
-    # * THIS IS NECESSARY only because bert outputs for the entire batch of
-    #  ~1000 relations will cause OOM issue on GPU, so move to batchified
-    #  setting and handle outputs accordingly.
-    all_correct = []
-    all_loss = []
-    all_counter = Counter()
-    for i, batch in enumerate(example_batches):
-      feed_dict = self.model.postprocess_batch_vals(
-        batch, values=bert_outputs, l2i_mapping=self.l2i,
-        exid_to_feature_mapping=exid_to_feature_mapping)
-
-      per_example_loss, loss, preds, correct, acc = \
-        sess.run(
-          [self.model.per_example_loss, self.model.loss, self.model.preds,
-           self.model.correct, self.model.acc], feed_dict=feed_dict)
-
-      # accumulate losses and prediction evaluation
-      all_loss.extend(per_example_loss)
-      all_correct.extend(correct)
-
-      c = Counter(preds)
-      all_counter.update(c)
-      for key in c.keys():
-        tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
-
-      tf.logging.info(
-        "[EVAL Batch {}/{}] loss: {:.3f} acc: {:.3f}".format(
-          i + 1, num_batches, loss, acc))
-
-    tf.logging.info("[EVAL FINAL] loss: {:.3f} acc: {:.3f}".format(
-      np.mean(all_loss), np.mean(all_correct)))
-
-    # all pred outputs for dev set
-    for key in all_counter.keys():
-      tf.logging.info(" {:3d}: {}".format(all_counter[key], self.labels[key]))
+        msg_header = "[EVAL FINAL]"
+        mean_loss = np.mean(all_loss)
+        mean_acc = np.mean(all_correct)
+        self.display_log(all_counter, msg_header, mean_loss, mean_acc)
 
   ################################## PREDICT ###################################
   def predict(self):
@@ -403,14 +283,6 @@ class DRSCExperiment(Experiment):
 
     tf.logging.info("***** Begin Predict *****")
 
-    # # build graph
-    # tf.reset_default_graph()
-    # self.init_all(is_training=False)
-    #
-    # saver = tf.train.Saver()
-    #
-    # sess = tf.Session(config=self.sess_config)
-    # saver.restore(sess, self.model_ckpt_path)
     res = {}
 
     # build graph
@@ -420,134 +292,61 @@ class DRSCExperiment(Experiment):
         self.init_all(is_training=False)
 
         saver = tf.train.Saver()
-
         saver.restore(sess, self.model_ckpt_path)
 
         for dataset_type in ['test', 'blind']:
           is_test_set = dataset_type == 'test'
 
-          predict_fn = None
-          if self.hp.embedding == 'bert' and not self.hp.finetune_embedding:
+          if self.hp.embedding == 'bert':
             if is_test_set:
-              examples = self.processor.get_test_examples(for_bert_embedding=True)
+              examples = \
+                self.processor.get_test_examples(for_bert_embedding=True)
             else:
-              examples = self.processor.get_blind_examples(for_bert_embedding=True)
-            predict_fn = self.predict_from_vals
+              examples = self.processor.get_blind_examples(
+                for_bert_embedding=True)
           else:
-            if self.hp.embedding == 'bert':
-              if is_test_set:
-                examples = self.processor.get_test_examples(for_bert_embedding=True)
-              else:
-                examples = self.processor.get_blind_examples(
-                  for_bert_embedding=True)
+            if is_test_set:
+              examples = self.processor.get_test_examples()
             else:
-              if is_test_set:
-                examples = self.processor.get_test_examples()
-              else:
-                examples = self.processor.get_blind_examples()
-            predict_fn = self.predict_from_ids
+              examples = self.processor.get_blind_examples()
 
           tf.logging.info(f"Inference on {dataset_type.upper()} set")
-          self.processor.remove_cache_by_key(dataset_type)
 
-          preds = predict_fn(examples, sess, is_test_set=is_test_set)
-          res[dataset_type] = preds
+          example_batches = self.batchify(examples, self.hp.batch_size, False)
+          num_batches = len(example_batches)
+          tf.logging.info(f"Created {num_batches} batches.")
+
+          all_correct = []
+          all_preds = []
+          all_counter = Counter()
+
+          for i, batch in enumerate(example_batches):
+            batch = self.embedding.convert_to_ids(batch, self.l2i)
+            fetch_ops = ['preds', 'correct', 'acc']
+            ops, feed_dict = self.model.postprocess_batch(batch,
+                                                          fetch_ops=fetch_ops)
+            preds, correct, acc = sess.run(ops, feed_dict=feed_dict)
+
+            all_preds.extend(preds)
+            all_correct.extend(correct)
+
+            c = Counter(preds)
+            all_counter.update(c)
+
+            msg_header = \
+              "[{} Batch {}/{}]".format(dataset_type.upper(), i+1, num_batches)
+            self.display_log(c, msg_header, mean_loss=None, mean_acc=acc)
+
+          msg_header = f"[{dataset_type.upper()} FINAL]"
+          mean_acc = np.mean(all_correct)
+          self.display_log(all_counter, msg_header, mean_loss=None,
+                           mean_acc=mean_acc)
+
+          # convert label_id preds to labels
+          preds_str = [self.i2l(pred) for pred in all_preds]
+          res[dataset_type] = preds_str
 
     return res
 
-  def predict_from_ids(self, examples, sess, is_test_set=False):
-    if is_test_set:
-      dataset_type = "test"
-    else:
-      dataset_type = "blind"
 
-    example_batches = self.batchify(examples,
-                                    batch_size=self.hp.batch_size,
-                                    do_shuffle=False)
-    num_batches = len(example_batches)
-    tf.logging.info(f"Created {num_batches} batches.")
 
-    all_correct = []
-    all_preds = []
-    all_counter = Counter()
-
-    for i, batch in enumerate(example_batches):
-      batch = self.embedding.convert_to_ids(batch, self.l2i)
-      fetch_ops = ['preds', 'correct', 'acc']
-      ops, feed_dict = self.model.postprocess_batch_ids(batch,
-                                                        fetch_ops=fetch_ops)
-
-      preds, correct, acc = sess.run(ops, feed_dict=feed_dict)
-
-      all_preds.extend(preds)
-      all_correct.extend(correct)
-
-      c = Counter(preds)
-      all_counter.update(c)
-      for key in c.keys():
-        tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
-
-      tf.logging.info(
-        "[{} Batch {}/{}] acc: {:.3f}".format(
-          dataset_type.upper(), i + 1, num_batches, acc))
-
-    tf.logging.info("[{} FINAL] acc: {:.3f}".format(
-      dataset_type.upper(), np.mean(all_correct)))
-
-    for key in all_counter.keys():
-      tf.logging.info(f" {self.labels[key]}: {all_counter[key]}")
-
-    # convert label_id preds to labels
-    preds_str = [self.i2l(pred) for pred in all_preds]
-    return preds_str
-
-  def predict_from_vals(self, examples, sess, is_test_set=False):
-    if is_test_set:
-      dataset_type = "test"
-    else:
-      dataset_type = "blind"
-
-    embedding_res = self.embedding.convert_to_values(examples)
-    bert_outputs, exid_to_feature_mapping = embedding_res
-
-    example_batches = self.batchify(examples,
-                                    batch_size=self.hp.batch_size,
-                                    do_shuffle=False)
-    num_batches = len(example_batches)
-    tf.logging.info(f"Created {num_batches} batches.")
-
-    all_correct = []
-    all_preds = []
-    all_counter = Counter()
-
-    for i, batch in enumerate(example_batches):
-      feed_dict = self.model.postprocess_batch_vals(
-        batch, values=bert_outputs, l2i_mapping=self.l2i,
-        exid_to_feature_mapping=exid_to_feature_mapping)
-
-      preds, correct, acc = \
-        sess.run([self.model.preds, self.model.correct, self.model.acc],
-                 feed_dict=feed_dict)
-
-      all_preds.extend(preds)
-      all_correct.extend(correct)
-
-      c = Counter(preds)
-      all_counter.update(c)
-      for key in c.keys():
-        tf.logging.info(" {:3d}: {}".format(c[key], self.labels[key]))
-
-      tf.logging.info(
-        "[{} Batch {}/{}] acc: {:.3f}".format(
-          dataset_type.upper(), i + 1, num_batches,  acc))
-
-    tf.logging.info("[{} FINAL] acc: {:.3f}".format(
-      dataset_type.upper(), np.mean(all_correct)))
-
-    for key in all_counter.keys():
-      tf.logging.info(f" {self.labels[key]}: {all_counter[key]}")
-
-    # convert preds to labels
-    preds_str = [self.i2l(pred) for pred in all_preds]
-
-    return preds_str

@@ -11,10 +11,6 @@ class Embedding(ABC):
   def convert_to_ids(self, examples, l2i, **kwargs):
     pass
 
-  @abstractmethod
-  def convert_to_values(self, examples, **kwargs):
-    pass
-
   ################################## GETTERS ###################################
   @property
   def embedding_table(self):
