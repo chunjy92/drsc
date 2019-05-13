@@ -101,8 +101,7 @@ IMPLICIT_11_WAY = [
 IMPLICIT_15_WAY = sorted(IMPLICIT_4_WAY + IMPLICIT_11_WAY)
 
 # from https://github.com/nikitakit/self-attentive-parser/blob/master/src/parse_nk.py
-# TODO (May 5): currently not used
-BERT_TOKEN_MAPPING = {
+TOKEN_MAPPING = {
     "-LRB-": "(",
     "-RRB-": ")",
     "-LCB-": "{",

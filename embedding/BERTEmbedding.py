@@ -1,5 +1,6 @@
 #! /usr/bin/python3
 # -*- coding: utf-8 -*-
+import copy
 
 import tensorflow as tf
 
@@ -45,9 +46,13 @@ class BERTEmbedding(Embedding):
     # load bert
     tokenization.validate_case_matches_checkpoint(self.do_lower_case,
                                                   self.init_checkpoint)
-    self.bert_config = modeling.BertConfig.from_json_file(self.bert_config_file)
+    self.bert_config = copy.deepcopy(
+      modeling.BertConfig.from_json_file(self.bert_config_file))
 
     self.is_training = is_training
+    if not self.is_training:
+      self.bert_config.hidden_dropout_prob = 0.0
+      self.bert_config.attention_probs_dropout_prob = 0.0
 
     self._embedding_table = None
     self._vocab = tokenization.load_vocab(self.vocab_file)
@@ -62,6 +67,64 @@ class BERTEmbedding(Embedding):
     self.build()
 
   ################################### BUILD ####################################
+  def build_bert_model(self,
+                       input_ids,
+                       input_mask,
+                       token_type_ids):
+    with tf.variable_scope('bert'):
+      with tf.variable_scope("embeddings"):
+        # Perform embedding lookup on the word ids.
+        (embedding_output, _) = modeling.embedding_lookup(
+            input_ids=input_ids,
+            vocab_size=self.bert_config.vocab_size,
+            embedding_size=self.bert_config.hidden_size,
+            initializer_range=self.bert_config.initializer_range,
+            word_embedding_name="word_embeddings",
+            use_one_hot_embeddings=False
+        )
+
+        # Add positional embeddings and token type embeddings, then layer
+        # normalize and perform dropout.
+        embedding_output = modeling.embedding_postprocessor(
+            input_tensor=embedding_output,
+            use_token_type=True,
+            token_type_ids=token_type_ids,
+            token_type_vocab_size=self.bert_config.type_vocab_size,
+            token_type_embedding_name="token_type_embeddings",
+            use_position_embeddings=True,
+            position_embedding_name="position_embeddings",
+            initializer_range=self.bert_config.initializer_range,
+            max_position_embeddings=self.bert_config.max_position_embeddings,
+            dropout_prob=self.bert_config.hidden_dropout_prob
+        )
+
+      with tf.variable_scope("encoder"):
+        # This converts a 2D mask of shape [batch_size, seq_length] to a 3D
+        # mask of shape [batch_size, seq_length, seq_length] which is used
+        # for the attention scores.
+        attention_mask = modeling.create_attention_mask_from_input_mask(
+            input_ids, input_mask)
+
+        # Run the stacked transformer, only fetching the final lyaer
+        # `final_layer` shape = [batch_size, seq_length, hidden_size].
+        self.all_encoder_layers = modeling.transformer_model(
+            input_tensor=embedding_output,
+            attention_mask=attention_mask,
+            hidden_size=self.bert_config.hidden_size,
+            num_hidden_layers=self.bert_config.num_hidden_layers,
+            num_attention_heads=self.bert_config.num_attention_heads,
+            intermediate_size=self.bert_config.intermediate_size,
+            intermediate_act_fn=modeling.get_activation(
+              self.bert_config.hidden_act),
+            hidden_dropout_prob=self.bert_config.hidden_dropout_prob,
+            attention_probs_dropout_prob=\
+              self.bert_config.attention_probs_dropout_prob,
+            initializer_range=self.bert_config.initializer_range,
+            do_return_all_layers=True
+        )
+
+      self.sequence_output = self.all_encoder_layers[-1]
+
   def build_single_arg(self, scope=None):
     tf.logging.debug("Building single arg pipeline in BERT Embedding")
     self.arg = tf.placeholder(tf.int32, [None, self.max_arg_length],
@@ -77,14 +140,21 @@ class BERTEmbedding(Embedding):
 
     segment_ids = tf.zeros_like(self.arg, dtype=tf.int32)
 
-    bert_model = modeling.BertModel(config=self.bert_config,
-                                    is_training=self.is_training,
-                                    input_ids=self.arg,
-                                    input_mask=self.arg_attn_mask,
-                                    token_type_ids=segment_ids,
-                                    use_one_hot_embeddings=False,
-                                    scope='bert')
-    bert_arg = bert_model.get_sequence_output()
+    # bert_model = modeling.BertModel(config=self.bert_config,
+    #                                 is_training=self.is_training,
+    #                                 input_ids=self.arg,
+    #                                 input_mask=self.arg_attn_mask,
+    #                                 token_type_ids=segment_ids,
+    #                                 use_one_hot_embeddings=False,
+    #                                 scope='bert')
+    # bert_arg = bert_model.get_sequence_output()
+
+    # custom
+    self.build_bert_model(input_ids=self.arg,
+                          input_mask=self.arg_attn_mask,
+                          token_type_ids=segment_ids)
+
+    bert_arg = self.sequence_output
 
     input_shape = modeling.get_shape_list(bert_arg, expected_rank=3)
     batch_size = input_shape[0]
@@ -123,16 +193,22 @@ class BERTEmbedding(Embedding):
       tf.ones_like(self.arg2, dtype=tf.int32)  # Arg2: 1s
     ], axis=1)
 
-    bert_model = modeling.BertModel(config=self.bert_config,
-                                    is_training=self.is_training,
-                                    input_ids=arg_concat,
-                                    input_mask=self.bert_mask_concat,
-                                    token_type_ids=segment_ids,
-                                    use_one_hot_embeddings=False,
-                                    scope='bert')
+    # bert_model = modeling.BertModel(config=self.bert_config,
+    #                                 is_training=self.is_training,
+    #                                 input_ids=arg_concat,
+    #                                 input_mask=self.bert_mask_concat,
+    #                                 token_type_ids=segment_ids,
+    #                                 use_one_hot_embeddings=False,
+    #                                 scope='bert')
+    #
+    # # [batch, arg_len*2, hidden_size]
+    # self.bert_arg_concat = bert_model.get_sequence_output()
+    # custom
+    self.build_bert_model(input_ids=arg_concat,
+                          input_mask=self.bert_mask_concat,
+                          token_type_ids=segment_ids)
 
-    # [batch, arg_len*2, hidden_size]
-    self.bert_arg_concat = bert_model.get_sequence_output()
+    self.bert_arg_concat = self.sequence_output
 
   def build(self, scope=None):
     """"""
@@ -158,24 +234,24 @@ class BERTEmbedding(Embedding):
       tokens_a.insert(0, "[CLS]")
       tokens_a.append("[SEP]")
 
-      if not self.split_args:
-        # retain CLS
-        if len(tokens_b) > keep_length :
-          if self.truncation_mode == 'normal':
-            tokens_b = tokens_b[:keep_length]
-          else:
-            tokens_b = tokens_b[-keep_length:]
-        tokens_b.insert(0, "[CLS]")
-        tokens_b.append("[SEP]")
-      else:
-        # NO CLS
-        keep_length = self.max_arg_length - 1
-        if len(tokens_b) > keep_length:
-          if self.truncation_mode == 'normal':
-            tokens_b = tokens_b[:keep_length]
-          else:
-            tokens_b = tokens_b[-keep_length:]
-        tokens_b.append("[SEP]")
+      # if not self.split_args:
+      # retain CLS
+      if len(tokens_b) > keep_length :
+        if self.truncation_mode == 'normal':
+          tokens_b = tokens_b[:keep_length]
+        else:
+          tokens_b = tokens_b[-keep_length:]
+      tokens_b.insert(0, "[CLS]")
+      tokens_b.append("[SEP]")
+      # else:
+      #   # NO CLS
+      #   keep_length = self.max_arg_length - 1
+      #   if len(tokens_b) > keep_length:
+      #     if self.truncation_mode == 'normal':
+      #       tokens_b = tokens_b[:keep_length]
+      #     else:
+      #       tokens_b = tokens_b[-keep_length:]
+      #   tokens_b.append("[SEP]")
 
       input_ids_a = self.tokenizer.convert_tokens_to_ids(tokens_a)
       input_ids_b = self.tokenizer.convert_tokens_to_ids(tokens_b)

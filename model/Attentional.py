@@ -322,26 +322,29 @@ class Attentional(Model):
             use_bias=False
           )
 
-      # # if not self.is_finetunable_bert_embedding:
-      # additional context encoding with segment_ids and positional encoding
-      # ONLY when BERT is not being fine-tuned
-      batch_size = modeling.get_shape_list(input_concat, expected_rank=3)[0]
-      segment_ids = tf.concat([
-        tf.zeros([batch_size, self.max_arg_length], dtype=tf.int32),
-        tf.ones([batch_size, self.max_arg_length], dtype=tf.int32)
-      ], axis=1)
+      with tf.variable_scope("embedding_postprocess"):
+        # # if not self.is_finetunable_bert_embedding:
+        # additional context encoding with segment_ids and positional encoding
+        # ONLY when BERT is not being fine-tuned
+        batch_size = modeling.get_shape_list(input_concat, expected_rank=3)[0]
+        segment_ids = tf.concat([
+          tf.zeros([batch_size, self.max_arg_length], dtype=tf.int32),
+          tf.ones([batch_size, self.max_arg_length], dtype=tf.int32)
+        ], axis=1)
 
-      input_concat = self.encode_concat_context(
-        input_concat, segment_ids,
-        hidden_dropout_prob=self.hidden_dropout_prob, use_segment_ids=True,
-        use_position_embedding=True)
+        input_concat = self.encode_concat_context(
+          input_concat, segment_ids,
+          hidden_dropout_prob=self.hidden_dropout_prob, use_segment_ids=True,
+          use_position_embedding=True)
 
-      # attention layers, for now keeping all encoder layers
-      self.all_encoder_layers = \
-        self.build_attn_layers(input_concat,
-                               attn_mask_concat=mask_concat,
-                               hidden_dropout_prob=self.hidden_dropout_prob,
-                               do_return_all_layers=True)
+      with tf.variable_scope("encoder"):
+        # attention layers, for now keeping all encoder layers
+        self.all_encoder_layers = \
+          self.build_attn_layers(input_concat,
+                                 attn_mask_concat=mask_concat,
+                                 hidden_dropout_prob=self.hidden_dropout_prob,
+                                 do_return_all_layers=True)
+
       self.sequence_output = self.all_encoder_layers[-1]
 
       with tf.variable_scope("pooler"):
@@ -361,6 +364,9 @@ class Attentional(Model):
     self.correct = tf.cast(tf.equal(self.preds, self.label), "float",
                            name="correct")
     self.acc = tf.reduce_mean(self.correct, name="acc")
+
+    tf.summary.scalar('loss', self.loss)
+    tf.summary.scalar('accuracy', self.acc)
 
     self.train_op = self.build_train_op()
 

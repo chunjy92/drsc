@@ -123,19 +123,19 @@ class Model(ABC):
         if not var.name.startswith("bert"):
           tf.add_to_collection(tf.GraphKeys.TRAINABLE_VARIABLES, var)
 
-    if self.optimizer_name == "adam" and self.num_warmup_steps > 0:
-      tf.logging.info("Adam Weight Decay Optimizer")
-      train_op = optimization.create_optimizer(
-        loss=self.loss, init_lr=self.learning_rate,
-        num_train_steps=self.num_train_steps,
-        num_warmup_steps=self.num_warmup_steps,
-        use_tpu=False
-      )
-    else:
-      optimizer = self.get_optimizer(self.optimizer_name)
-      tf.logging.info(f"{self.optimizer_name.capitalize()} Optimizer")
-      train_op = optimizer(self.learning_rate).minimize(self.loss,
-                                                        name='train_op')
+    # if self.optimizer_name == "adam" and self.num_warmup_steps > 0:
+    #   tf.logging.info("Adam Weight Decay Optimizer")
+    #   train_op = optimization.create_optimizer(
+    #     loss=self.loss, init_lr=self.learning_rate,
+    #     num_train_steps=self.num_train_steps,
+    #     num_warmup_steps=self.num_warmup_steps,
+    #     use_tpu=False
+    #   )
+    # else:
+    optimizer = self.get_optimizer(self.optimizer_name)
+    tf.logging.info(f"{self.optimizer_name.capitalize()} Optimizer")
+    train_op = optimizer(self.learning_rate).minimize(self.loss,
+                                                      name='train_op')
     return train_op
 
   ############################### POSTPROCESS ##################################
@@ -170,7 +170,6 @@ class Model(ABC):
   def build_input_pipeline(self):
     """Build all placeholder ops"""
 
-    # if self.is_finetunable_bert_embedding:
     if self.is_bert_embedding:
       placeholer_ops = self.embedding.get_all_placeholder_ops()
 
@@ -205,7 +204,6 @@ class Model(ABC):
         tf.placeholder(tf.float32, self.embedding_shape,
                        "embedding_placeholder")
 
-      # placehodlers for attention_mask
       self.arg1_attn_mask = tf.placeholder(
         tf.int32, [None, self.max_arg_length], name="arg1_attn_mask")
       self.arg2_attn_mask = tf.placeholder(

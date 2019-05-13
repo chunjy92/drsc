@@ -15,9 +15,6 @@ __author__ = 'Jayeol Chun'
 
 
 class DRSCExperiment(Experiment):
-  """
-  TODO (May 5): lot of redundancy
-  """
   ################################### INIT #####################################
   def init_all(self, is_training=False):
     self.init_embedding(is_training=is_training)
@@ -142,12 +139,13 @@ class DRSCExperiment(Experiment):
     else:
       examples = self.processor.get_train_examples()
 
-    examples = examples[:1024]
-
+    num_examples = len(examples)
     self.num_train_steps = int(
-      len(examples) / self.hp.batch_size * self.hp.num_epochs)
+      num_examples / self.hp.batch_size * self.hp.num_epochs)
     self.num_warmup_steps = \
       int(self.num_train_steps * self.hp.warmup_proportion)
+
+    self.summary_writer = tf.summary.FileWriter(self.hp.model_dir)
 
     for epoch in range(self.hp.num_epochs):
       self.init_all(is_training=True)
@@ -157,15 +155,17 @@ class DRSCExperiment(Experiment):
 
       init = tf.global_variables_initializer()
 
+      # after initializer
       saver = tf.train.Saver()
 
       model_ckpt = tf.train.latest_checkpoint(self.hp.model_dir)
-      tf.logging.info(f"Model CKPT: {model_ckpt}")
-
-      if not model_ckpt:
-        self.init_bert_from_checkpoint()
+      if not model_ckpt and self.hp.embedding == 'bert':
+          self.init_bert_from_checkpoint()
 
       with tf.Session(config=self.sess_config) as sess:
+        if epoch == 0:
+          self.summary_writer.add_graph(tf.get_default_graph())
+
         sess.run(init)
         if self.hp.embedding != 'bert':
           sess.run(self.model.embedding_init_op,
@@ -189,9 +189,18 @@ class DRSCExperiment(Experiment):
 
           ops, feed_dict = \
             self.model.postprocess_batch(batch, fetch_ops=fetch_ops)
-          _, preds, per_loss, correct = sess.run(ops, feed_dict=feed_dict)
 
-          # self.summary_writer.add_summary(summary, global_step)
+
+          # _, preds, per_loss, correct = sess.run(ops, feed_dict=feed_dict)
+          # ops += [self.summary_op]
+          ops.append(self.summary_op)
+          _, preds, per_loss, correct, summary = sess.run(ops,
+                                                          feed_dict=feed_dict)
+
+          # add summary
+          global_step = (num_batches * epoch) + i
+          self.summary_writer.add_summary(summary, global_step=global_step)
+
           all_preds.extend(preds)
           all_loss.extend(per_loss)
           all_correct.extend(correct)
@@ -202,8 +211,6 @@ class DRSCExperiment(Experiment):
             mean_loss = np.mean(all_loss)
             mean_acc = np.mean(all_correct)
 
-            print(mean_acc, len(all_correct))
-
             msg_header = \
               "[Epoch {} Batch {}/{}]".format(epoch, i+1, num_batches)
             self.display_log(c, msg_header, mean_loss, mean_acc)
@@ -212,10 +219,22 @@ class DRSCExperiment(Experiment):
             all_correct = []
             all_loss = []
 
+        if (i+1) % self.hp.log_every != 0:
+          c = Counter(all_preds)
+
+          mean_loss = np.mean(all_loss)
+          mean_acc = np.mean(all_correct)
+
+          msg_header = \
+            "[Epoch {} Batch {}/{}]".format(epoch, i + 1, num_batches)
+          self.display_log(c, msg_header, mean_loss, mean_acc)
+
         saved_path = saver.save(sess, self.model_ckpt_path)
         tf.logging.info(f"Saved model parameters at {saved_path}")
 
       self.eval()
+
+    self.summary_writer.close()
 
   ################################### EVAL #####################################
   def eval(self):
@@ -266,7 +285,6 @@ class DRSCExperiment(Experiment):
         msg_header = "[EVAL FINAL]"
         mean_loss = np.mean(all_loss)
         mean_acc = np.mean(all_correct)
-        print(mean_acc, len(all_correct))
         self.display_log(all_counter, msg_header, mean_loss, mean_acc)
 
   ################################## PREDICT ###################################
@@ -337,7 +355,6 @@ class DRSCExperiment(Experiment):
 
           msg_header = f"[{dataset_type.upper()} FINAL]"
           mean_acc = np.mean(all_correct)
-          print(mean_acc, len(all_correct))
           self.display_log(all_counter, msg_header, mean_loss=None,
                            mean_acc=mean_acc)
 

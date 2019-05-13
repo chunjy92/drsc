@@ -108,15 +108,15 @@ class Experiment(ABC):
                   mean_acc=None):
     msg = msg_header
 
-    if mean_loss:
+    if mean_loss is not None:
       msg += " loss: {:.3f}".format(mean_loss)
 
-    if mean_acc:
+    if mean_acc is not None:
       msg += " acc: {:.3f}".format(mean_acc)
 
     tf.logging.info(msg)
-    for key in pred_counter.keys():
-      tf.logging.info(" {:3d}: {}".format(pred_counter[key], self.labels[key]))
+    for key in sorted(pred_counter.keys()):
+      tf.logging.info(" {:4d}: {}".format(pred_counter[key], self.labels[key]))
 
   #################################### RUN #####################################
   def run(self):

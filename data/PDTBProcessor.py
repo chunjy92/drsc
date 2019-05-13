@@ -208,13 +208,14 @@ class PDTBProcessor(object):
             sent = parse[doc_id][const.SENTENCES][token[const.SENT_ID]]
             gold_token = sent[const.WORDS][token[const.TOK_ID]][0]
 
+            # PTB token mapping, see `utils/const.py` for its source
+            if gold_token in const.TOKEN_MAPPING:
+              gold_token = const.TOKEN_MAPPING[gold_token]
+
             if self.do_lower_case:
               gold_token = gold_token.lower()
 
             tokens.append(gold_token)
-
-          tf.logging.debug(f"Gold: {' '.join(tokens)}")
-          tf.logging.debug(f"Raw Text: {rel[token_type][const.RAW_TEXT]}")
 
           if for_bert_embedding:
             # for compatibility, since BERT expects a string. For truncation,
