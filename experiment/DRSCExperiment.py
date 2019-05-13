@@ -83,8 +83,8 @@ class DRSCExperiment(Experiment):
           "learned projection weight matrix.")
 
   def init_model(self, is_training=False):
-    if self.hp.model == "mlp":
-      self.model = model.MLP(
+    if self.hp.model == "feedforward":
+      self.model = model.FeedForward(
         labels=self.labels,
         max_arg_length=self.hp.max_arg_length,
         word_vector_width=self.hp.word_vector_width,

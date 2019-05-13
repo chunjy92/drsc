@@ -7,7 +7,7 @@ from .Model import Model
 __author__ = 'Jayeol Chun'
 
 
-class MLP(Model):
+class FeedForward(Model):
   ################################### BUILD ####################################
   def build_dense_layers_single_input(self, input_tensor, num_layers=None):
     num_layers = num_layers if num_layers else self.num_hidden_layers
@@ -27,7 +27,7 @@ class MLP(Model):
     return output
 
   def combine_pooled_tensors(self, input_1, input_2, target_hidden_size=None,
-                               add_bias=False):
+                             add_bias=False):
     hidden_size = input_1.shape[-1].value
     target_hidden_size = \
       target_hidden_size if target_hidden_size else self.hidden_size
@@ -56,23 +56,19 @@ class MLP(Model):
     return tf.nn.tanh(logits, name="combine_tanh")
 
   def build(self, scope=None):
-    with tf.variable_scope(scope, default_name="mlp_model"):
+    with tf.variable_scope(scope, default_name="feedforward_model"):
       self.build_input_pipeline()
 
-      if self.is_finetunable_bert_embedding:
-        # finetunable bert embedding concatenates arg1 and arg2
+      if self.is_bert_embedding:
         arg_concat = self.embedding.get_arg_concat()
         combined_output = self.apply_cls_pooling_fn(arg_concat)
       else:
-        if self.is_bert_embedding:
-          arg1, arg2 = self.arg1, self.arg2
-        else:
-          self.embedding_table = self.init_embedding(self.embedding_placeholder)
+        self.embedding_table = self.init_embedding(self.embedding_placeholder)
 
-          # embedding lookup
-          with tf.variable_scope("embedding"):
-            arg1 = tf.nn.embedding_lookup(self.embedding_table, self.arg1)
-            arg2 = tf.nn.embedding_lookup(self.embedding_table, self.arg2)
+        # embedding lookup
+        with tf.variable_scope("embedding"):
+          arg1 = tf.nn.embedding_lookup(self.embedding_table, self.arg1)
+          arg2 = tf.nn.embedding_lookup(self.embedding_table, self.arg2)
 
         with tf.variable_scope("pooling"):
           arg1_pooled = self.apply_pooling_fn(arg1)

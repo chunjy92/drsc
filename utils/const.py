@@ -21,7 +21,7 @@ PDTB = "./data/pdtb"
 CONLL = os.path.join(PDTB, "conll")
 
 # config choices
-MODELS = ['mlp',  # Te's best model
+MODELS = ['feedforward',  # Te's best model
           'bert', # BERT only
           'inter_attn', 'inter_attention',
           'self_attn', 'self_attention',
