@@ -90,5 +90,43 @@ class BERTTEmbeddingTest(tf.test.TestCase):
 
     self.assertAllEqual(l2i(self.example.label), label[0])
 
+  def test_padding_truncation(self):
+    # label to index
+    l2i = lambda l: self.labels.index(l)
+
+    # padding
+    embedding = BERTEmbedding(
+      bert_config_file=self.bert_config_file,
+      vocab_file=self.bert_vocab_file,
+      init_checkpoint=self.bert_init_ckpt,
+      max_arg_length=11,
+      do_lower_case=True,
+      padding_action="pad_left_arg1",
+      truncation_mode='reverse'
+    )
+
+    example_ids = embedding.convert_to_ids([self.example], l2i)
+    arg1, arg2, _, _, _, _ = example_ids
+
+    arg1_toks = self.bert_tokenizer.tokenize(self.example.arg1)[-9:]
+    arg2_toks = self.bert_tokenizer.tokenize(self.example.arg2)[-9:]
+
+    # [CLS] ~~~ [SEP]
+    arg1_bert = ['[CLS]'] + arg1_toks + ['[SEP]']
+    arg2_bert = ['[CLS]'] + arg2_toks + ['[SEP]']
+
+    # real token ids
+    arg1_bert_ids = self.bert_tokenizer.convert_tokens_to_ids(arg1_bert)
+    arg2_bert_ids = self.bert_tokenizer.convert_tokens_to_ids(arg2_bert)
+
+    # padding token ids: 0
+    arg1_bert_ids_padding = [arg1_bert_ids[0]] + \
+                            [0] * (11 - len(arg1_bert_ids)) + \
+                            arg1_bert_ids[1:]
+    arg2_bert_ids_padding = arg2_bert_ids + [0] * (11 - len(arg2_bert_ids))
+
+    self.assertAllEqual(arg1[0], arg1_bert_ids_padding)
+    self.assertAllEqual(arg2[0], arg2_bert_ids_padding)
+
 if __name__ == '__main__':
   tf.test.main()

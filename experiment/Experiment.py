@@ -106,9 +106,6 @@ class Experiment(ABC):
 
   def display_log(self, pred_counter, msg_header, mean_loss=None,
                   mean_acc=None):
-    for key in pred_counter.keys():
-      tf.logging.info(" {:3d}: {}".format(pred_counter[key], self.labels[key]))
-
     msg = msg_header
 
     if mean_loss:
@@ -118,6 +115,8 @@ class Experiment(ABC):
       msg += " acc: {:.3f}".format(mean_acc)
 
     tf.logging.info(msg)
+    for key in pred_counter.keys():
+      tf.logging.info(" {:3d}: {}".format(pred_counter[key], self.labels[key]))
 
   #################################### RUN #####################################
   def run(self):
@@ -128,7 +127,8 @@ class Experiment(ABC):
       self.train()
       self.processor.remove_cache_by_key('train')
 
-    if self.hp.do_eval:
+    # `eval` called from `train` at every end of epoch
+    if self.hp.do_eval and not self.hp.do_train:
       self.eval()
       self.processor.remove_cache_by_key('dev')
 

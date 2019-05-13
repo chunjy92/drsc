@@ -59,7 +59,7 @@ parser.add_argument(
 
 # experimental setting config
 parser.add_argument(
-  "--num_epochs", type=int, default=5, help="how many iterations to train")
+  "--num_epochs", type=int, default=3, help="how many iterations to train")
 parser.add_argument(
   "--log_every", type=int, default=1,
   help="how many batch iters per logging")

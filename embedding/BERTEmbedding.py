@@ -108,12 +108,12 @@ class BERTEmbedding(Embedding):
     self.conn = tf.placeholder(tf.int32, [None, self.max_arg_length],
                                name="conn")
 
-    # placehodlers for attention_mask
     self.arg1_attn_mask = tf.placeholder(
       tf.int32, [None, self.max_arg_length], name="arg1_attn_mask")
     self.arg2_attn_mask = tf.placeholder(
       tf.int32, [None, self.max_arg_length], name="arg2_attn_mask")
 
+    # inputs to bert model
     arg_concat = tf.concat([self.arg1, self.arg2], axis=1)
     self.bert_mask_concat = \
       tf.concat([self.arg1_attn_mask, self.arg2_attn_mask], axis=1)
@@ -158,13 +158,24 @@ class BERTEmbedding(Embedding):
       tokens_a.insert(0, "[CLS]")
       tokens_a.append("[SEP]")
 
-      if len(tokens_b) > keep_length :
-        if self.truncation_mode == 'normal':
-          tokens_b = tokens_b[:keep_length]
-        else:
-          tokens_b = tokens_b[-keep_length:]
-      tokens_b.insert(0, "[CLS]")
-      tokens_b.append("[SEP]")
+      if not self.split_args:
+        # retain CLS
+        if len(tokens_b) > keep_length :
+          if self.truncation_mode == 'normal':
+            tokens_b = tokens_b[:keep_length]
+          else:
+            tokens_b = tokens_b[-keep_length:]
+        tokens_b.insert(0, "[CLS]")
+        tokens_b.append("[SEP]")
+      else:
+        # NO CLS
+        keep_length = self.max_arg_length - 1
+        if len(tokens_b) > keep_length:
+          if self.truncation_mode == 'normal':
+            tokens_b = tokens_b[:keep_length]
+          else:
+            tokens_b = tokens_b[-keep_length:]
+        tokens_b.append("[SEP]")
 
       input_ids_a = self.tokenizer.convert_tokens_to_ids(tokens_a)
       input_ids_b = self.tokenizer.convert_tokens_to_ids(tokens_b)

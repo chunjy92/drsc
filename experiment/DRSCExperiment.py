@@ -142,80 +142,78 @@ class DRSCExperiment(Experiment):
     else:
       examples = self.processor.get_train_examples()
 
+    examples = examples[:1024]
+
     self.num_train_steps = int(
       len(examples) / self.hp.batch_size * self.hp.num_epochs)
     self.num_warmup_steps = \
       int(self.num_train_steps * self.hp.warmup_proportion)
 
-    global_step = 0
     for epoch in range(self.hp.num_epochs):
-      tf.reset_default_graph()
-      with tf.Graph().as_default() as graph:
-        with tf.Session(config=self.sess_config, graph=graph) as sess:
-          model_ckpt = tf.train.latest_checkpoint(self.hp.model_dir)
+      self.init_all(is_training=True)
 
-          self.init_all(is_training=True)
-          # for TensorBoard
-          self.summary_op = tf.summary.merge_all()
+      # for TensorBoard
+      self.summary_op = tf.summary.merge_all()
 
-          init = tf.global_variables_initializer()
+      init = tf.global_variables_initializer()
 
-          saver = None
-          if not model_ckpt:
-            saver = tf.train.Saver()
-            self.init_bert_from_checkpoint()
-          else:
-            # load from checkpoint
-            saver = tf.train.import_meta_graph(self.model_ckpt_path+".meta")
-            saver.restore(sess, model_ckpt)
+      saver = tf.train.Saver()
 
-          # run init ops
-          sess.run(init)
-          if self.hp.embedding != 'bert':
-            sess.run(self.model.embedding_init_op,
-                     feed_dict={
-                       self.model.embedding_placeholder: self.embedding_table})
+      model_ckpt = tf.train.latest_checkpoint(self.hp.model_dir)
+      tf.logging.info(f"Model CKPT: {model_ckpt}")
 
-          feat_batches = self.batchify(examples, self.hp.batch_size, True)
-          num_batches = len(feat_batches)
-          tf.logging.info(f"Created {num_batches} batches.")
+      if not model_ckpt:
+        self.init_bert_from_checkpoint()
 
-          all_preds = []
-          all_correct = []
-          all_loss = []
+      with tf.Session(config=self.sess_config) as sess:
+        sess.run(init)
+        if self.hp.embedding != 'bert':
+          sess.run(self.model.embedding_init_op,
+                   feed_dict={
+                     self.model.embedding_placeholder: self.embedding_table})
 
-          for i, batch in enumerate(feat_batches):
-            batch = self.embedding.convert_to_ids(batch, self.l2i)
-            fetch_ops = ['train_op', 'preds', 'per_loss', 'correct']
+        if model_ckpt:
+          saver.restore(sess, self.model_ckpt_path)
 
-            ops, feed_dict = self.model.postprocess_batch(
-              batch, fetch_ops=fetch_ops)
-            _, preds, per_loss, correct = sess.run(
-              ops, feed_dict=feed_dict)
+        feat_batches = self.batchify(examples, self.hp.batch_size, True)
+        num_batches = len(feat_batches)
+        tf.logging.info(f"Created {num_batches} batches.")
 
-            # self.summary_writer.add_summary(summary, global_step)
-            global_step += 1
+        all_preds = []
+        all_correct = []
+        all_loss = []
 
-            all_preds.extend(preds)
-            all_loss.extend(per_loss)
-            all_correct.extend(correct)
+        for i, batch in enumerate(feat_batches):
+          batch = self.embedding.convert_to_ids(batch, self.l2i)
+          fetch_ops = ['train_op', 'preds', 'per_loss', 'correct']
 
-            if (i+1) % self.hp.log_every == 0:
-              c = Counter(all_preds)
+          ops, feed_dict = \
+            self.model.postprocess_batch(batch, fetch_ops=fetch_ops)
+          _, preds, per_loss, correct = sess.run(ops, feed_dict=feed_dict)
 
-              mean_loss = np.mean(all_loss)
-              mean_acc = np.mean(all_correct)
+          # self.summary_writer.add_summary(summary, global_step)
+          all_preds.extend(preds)
+          all_loss.extend(per_loss)
+          all_correct.extend(correct)
 
-              msg_header = \
-                "[Epoch {} Batch {}/{}]".format(epoch, i+1, num_batches)
-              self.display_log(c, msg_header, mean_loss, mean_acc)
+          if (i+1) % self.hp.log_every == 0:
+            c = Counter(all_preds)
 
-              all_preds = []
-              all_correct = []
-              all_loss = []
+            mean_loss = np.mean(all_loss)
+            mean_acc = np.mean(all_correct)
 
-          tf.logging.info("Saving model parameters")
-          saver.save(sess, self.model_ckpt_path)
+            print(mean_acc, len(all_correct))
+
+            msg_header = \
+              "[Epoch {} Batch {}/{}]".format(epoch, i+1, num_batches)
+            self.display_log(c, msg_header, mean_loss, mean_acc)
+
+            all_preds = []
+            all_correct = []
+            all_loss = []
+
+        saved_path = saver.save(sess, self.model_ckpt_path)
+        tf.logging.info(f"Saved model parameters at {saved_path}")
 
       self.eval()
 
@@ -233,10 +231,10 @@ class DRSCExperiment(Experiment):
     # build graph
     tf.reset_default_graph()
     with tf.Graph().as_default() as graph:
-      with tf.Session(config=self.sess_config, graph=graph) as sess:
-        self.init_all(is_training=False)
+      self.init_all(is_training=False)
+      saver = tf.train.Saver()
 
-        saver = tf.train.Saver()
+      with tf.Session(config=self.sess_config, graph=graph) as sess:
         saver.restore(sess, self.model_ckpt_path)
 
         example_batches = self.batchify(examples, self.hp.batch_size, False)
@@ -268,6 +266,7 @@ class DRSCExperiment(Experiment):
         msg_header = "[EVAL FINAL]"
         mean_loss = np.mean(all_loss)
         mean_acc = np.mean(all_correct)
+        print(mean_acc, len(all_correct))
         self.display_log(all_counter, msg_header, mean_loss, mean_acc)
 
   ################################## PREDICT ###################################
@@ -287,10 +286,10 @@ class DRSCExperiment(Experiment):
     # build graph
     tf.reset_default_graph()
     with tf.Graph().as_default() as graph:
-      with tf.Session(config=self.sess_config, graph=graph) as sess:
-        self.init_all(is_training=False)
+      self.init_all(is_training=False)
+      saver = tf.train.Saver()
 
-        saver = tf.train.Saver()
+      with tf.Session(config=self.sess_config, graph=graph) as sess:
         saver.restore(sess, self.model_ckpt_path)
 
         for dataset_type in ['test', 'blind']:
@@ -338,6 +337,7 @@ class DRSCExperiment(Experiment):
 
           msg_header = f"[{dataset_type.upper()} FINAL]"
           mean_acc = np.mean(all_correct)
+          print(mean_acc, len(all_correct))
           self.display_log(all_counter, msg_header, mean_loss=None,
                            mean_acc=mean_acc)
 
