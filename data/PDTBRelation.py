@@ -28,7 +28,11 @@ class PDTBRelation(object):
     if isinstance(self.arg1, list):
       return f"guid: {self.guid }\n ARG1: {' '.join(self.arg1)}" \
         f"\n ARG2: {' '.join(self.arg2)}\n Conn: {self.conn}" \
-        f"\n Label: {self.label}"
+        f"\n Label: {self.label}\n Label List: {self.label_list}" \
+        f"\n ARG1 Mask: {self.arg1_attn_mask}\n ARG2 Mask: " \
+        f"{self.arg2_attn_mask}"
     else:
       return f"guid: {self.guid}\n ARG1: {self.arg1}\n ARG2: {self.arg2}" \
-        f"\n Conn: {self.conn}\n Label: {self.label}"
+        f"\n Conn: {self.conn}\n Label: {self.label}\n Label List: " \
+        f"{self.label_list}\n ARG1 Mask: {self.arg1_attn_mask}\n ARG2 Mask: " \
+        f"{self.arg2_attn_mask}"

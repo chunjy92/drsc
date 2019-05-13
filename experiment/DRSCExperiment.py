@@ -34,7 +34,6 @@ class DRSCExperiment(Experiment):
       bert_vocab_file = os.path.join(bert_model, const.BERT_VOCAB_FILE)
 
       self.embedding = embedding.BERTEmbedding(
-        model_dir=self.hp.model_dir,
         bert_config_file=bert_config_file,
         vocab_file=bert_vocab_file,
         init_checkpoint=bert_init_ckpt,

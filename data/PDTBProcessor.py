@@ -171,12 +171,13 @@ class PDTBProcessor(object):
     rel_filename = os.path.join(dataset_dir, rel_filename)
     parse_filename = os.path.join(dataset_dir, parse_filename)
 
-    pdtb = codecs.open(rel_filename, encoding='utf-8')
-    parse = json.load(codecs.open(parse_filename, encoding='utf8'))
+    pdtb_f = codecs.open(rel_filename, encoding='utf-8')
+    parse_f = codecs.open(parse_filename, encoding='utf8')
+    parse = json.load(parse_f)
 
     exid = 0
     examples = []
-    for i, pdtb_line in enumerate(pdtb):
+    for i, pdtb_line in enumerate(pdtb_f):
       rel = json.loads(pdtb_line)
 
       # relation identifier
@@ -212,6 +213,9 @@ class PDTBProcessor(object):
 
             tokens.append(gold_token)
 
+          tf.logging.debug(f"Gold: {' '.join(tokens)}")
+          tf.logging.debug(f"Raw Text: {rel[token_type][const.RAW_TEXT]}")
+
           if for_bert_embedding:
             # for compatibility, since BERT expects a string. For truncation,
             # padding and masking, see `convert_to_ids` in `BERTEmbedding.py`
@@ -228,13 +232,13 @@ class PDTBProcessor(object):
             mask = []
             if self.padding_action == "pad_left_arg1" and \
                     token_type==const.ARG1:
+              mask = [0] * num_pad + [1] * len(tokens)
               # pad at the beginning of tokens for arg1
               tokens = [const.PAD] * num_pad + tokens
-              mask = [0] * num_pad + [1] * len(tokens)
             else:
+              mask = [1] * len(tokens) + [0] * num_pad
               # pad at the end of tokens
               tokens += [const.PAD] * num_pad
-              mask = [1] * len(tokens) + [0] * num_pad
 
             if token_type in [const.ARG1, const.ARG2]:
               tok_mask[j] = mask
@@ -292,6 +296,9 @@ class PDTBProcessor(object):
     # cache
     if dataset_type not in self._cached:
       self._cached[dataset_type] = examples
+
+    pdtb_f.close()
+    parse_f.close()
 
     return examples
 
