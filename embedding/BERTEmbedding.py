@@ -140,21 +140,21 @@ class BERTEmbedding(Embedding):
 
     segment_ids = tf.zeros_like(self.arg, dtype=tf.int32)
 
-    # bert_model = modeling.BertModel(config=self.bert_config,
-    #                                 is_training=self.is_training,
-    #                                 input_ids=self.arg,
-    #                                 input_mask=self.arg_attn_mask,
-    #                                 token_type_ids=segment_ids,
-    #                                 use_one_hot_embeddings=False,
-    #                                 scope='bert')
-    # bert_arg = bert_model.get_sequence_output()
+    bert_model = modeling.BertModel(config=self.bert_config,
+                                    is_training=self.is_training,
+                                    input_ids=self.arg,
+                                    input_mask=self.arg_attn_mask,
+                                    token_type_ids=segment_ids,
+                                    use_one_hot_embeddings=False,
+                                    scope='bert')
+    bert_arg = bert_model.get_sequence_output()
 
-    # custom
-    self.build_bert_model(input_ids=self.arg,
-                          input_mask=self.arg_attn_mask,
-                          token_type_ids=segment_ids)
-
-    bert_arg = self.sequence_output
+    # # custom
+    # self.build_bert_model(input_ids=self.arg,
+    #                       input_mask=self.arg_attn_mask,
+    #                       token_type_ids=segment_ids)
+    #
+    # bert_arg = self.sequence_output
 
     input_shape = modeling.get_shape_list(bert_arg, expected_rank=3)
     batch_size = input_shape[0]
@@ -193,22 +193,23 @@ class BERTEmbedding(Embedding):
       tf.ones_like(self.arg2, dtype=tf.int32)  # Arg2: 1s
     ], axis=1)
 
-    # bert_model = modeling.BertModel(config=self.bert_config,
-    #                                 is_training=self.is_training,
-    #                                 input_ids=arg_concat,
-    #                                 input_mask=self.bert_mask_concat,
-    #                                 token_type_ids=segment_ids,
-    #                                 use_one_hot_embeddings=False,
-    #                                 scope='bert')
-    #
-    # # [batch, arg_len*2, hidden_size]
-    # self.bert_arg_concat = bert_model.get_sequence_output()
-    # custom
-    self.build_bert_model(input_ids=arg_concat,
-                          input_mask=self.bert_mask_concat,
-                          token_type_ids=segment_ids)
+    bert_model = modeling.BertModel(config=self.bert_config,
+                                    is_training=self.is_training,
+                                    input_ids=arg_concat,
+                                    input_mask=self.bert_mask_concat,
+                                    token_type_ids=segment_ids,
+                                    use_one_hot_embeddings=False,
+                                    scope='bert')
 
-    self.bert_arg_concat = self.sequence_output
+    # [batch, arg_len*2, hidden_size]
+    self.bert_arg_concat = bert_model.get_sequence_output()
+
+    # # custom
+    # self.build_bert_model(input_ids=arg_concat,
+    #                       input_mask=self.bert_mask_concat,
+    #                       token_type_ids=segment_ids)
+    #
+    # self.bert_arg_concat = self.sequence_output
 
   def build(self, scope=None):
     """"""

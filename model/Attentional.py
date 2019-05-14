@@ -355,7 +355,8 @@ class Attentional(Model):
           pooled_tensor,
           self.hidden_size,
           activation=tf.tanh,
-          kernel_initializer=modeling.create_initializer())
+          kernel_initializer=modeling.create_initializer()
+        )
 
 
     logits = self.build_loss_op(pooled_output)
@@ -392,11 +393,11 @@ class Attentional(Model):
       tgt_batch_size = src_batch_size * 2
       seq_length = len(arg1[0])
 
-      arg = np.zeros([tgt_batch_size, seq_length], dtype=np.float32)
+      arg = np.zeros([tgt_batch_size, seq_length], dtype=np.float64)
       arg[0::2] = arg1
       arg[1::2] = arg2
 
-      arg_attn_mask = np.zeros([tgt_batch_size, seq_length], dtype=np.float32)
+      arg_attn_mask = np.zeros([tgt_batch_size, seq_length], dtype=np.int32)
       arg_attn_mask[0::2] = arg1_mask
       arg_attn_mask[1::2] = arg2_mask
 
