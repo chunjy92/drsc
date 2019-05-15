@@ -16,10 +16,11 @@ __author__ = 'Jayeol Chun'
 class Experiment(ABC):
   def __init__(self, hp):
     self.hp = copy.deepcopy(hp)
+    self.hp.max_arg_length = int(self.hp.max_seq_length / 2)
 
     # init data preprocessor
     self.processor = PDTBProcessor(
-      max_arg_length=self.hp.max_arg_length,
+      max_seq_length=self.hp.max_seq_length,
       truncation_mode=self.hp.truncation_mode,
       do_lower_case=self.hp.do_lower_case,
       sense_type=self.hp.sense_type,
@@ -104,9 +105,13 @@ class Experiment(ABC):
 
     return batches
 
-  def display_log(self, pred_counter, msg_header, mean_loss=None,
-                  mean_acc=None):
-    msg = msg_header
+  def display_log(self, pred_counter, msg_header, proc_batch=-1, num_batch=-1,
+                  mean_loss=None, mean_acc=None):
+
+    if proc_batch > -1:
+      msg = f"[{msg_header} Batch {proc_batch}/{num_batch}]"
+    else:
+      msg = f"[{msg_header}]"
 
     if mean_loss is not None:
       msg += " loss: {:.3f}".format(mean_loss)

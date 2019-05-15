@@ -23,10 +23,8 @@ CONLL = os.path.join(PDTB, "conll")
 # config choices
 MODELS = ['feedforward',  # Te's best model
           'bert', # BERT only
-          'inter_attn', 'inter_attention',
-          'self_attn', 'self_attention',
-          'inter_intra_attn', 'inter_intra_attention',
-          'inter_self_attn', 'inter_self_attention']
+          'block_attn',
+          'mask_attn']
 EMBEDDINGS = ['random_init',
               'bert', # BERT as word embedding only
               'glove.6B.50d', # uncased
@@ -36,15 +34,26 @@ EMBEDDINGS = ['random_init',
               'glove.42B.300d', # uncased
               'glove.840B.300d', # cased
               'googlenews']
+ATTENTIONS = ['inter_attn', 'inter_attention',
+              'self_attn', 'self_attention',
+              'inter_intra_attn', 'inter_intra_attention', # block only
+              'inter_self_attn', 'inter_self_attention'] # block only
+
+# control actions
 TRUNC_MODES = ['normal', 'reverse', 'reverse_arg1', 'reverse_arg2']
 POOLING_ACTIONS = ['sum', 'mean', 'max', 'concat', 'matmul']
-CLS_ACTIONS = ['first_cls', 'second_cls', 'new_cls', 'concat',
-               'sum', 'mean', 'max', 'matmul']
+CLS_ACTIONS = ['first_cls', 'second_cls', 'new_cls'] + POOLING_ACTIONS
 CONN_ACTIONS = []
 PADDING_ACTIONS = ['normal', 'pad_left_arg1']
-OPTIMIZERS = ['sgd', 'adam', 'adagrad']
-SENSE_TYPES = ['all', 'implicit', 'non-explicit', 'explicit']
-MULTIPLE_SENSES_ACTIONS = ['pick_first', 'duplicate']
+
+OPTIMIZERS = ['adam']
+# OPTIMIZERS = ['sgd', 'adam', 'adagrad']
+
+# sense-related
+SENSE_TYPES = ['implicit']
+# SENSE_TYPES = ['all', 'implicit', 'non-explicit', 'explicit']
+MULTIPLE_SENSES_ACTIONS = ['pick_first']
+# MULTIPLE_SENSES_ACTIONS = ['pick_first', 'duplicate']
 
 # special tokens
 PAD = '[PAD]'
@@ -100,7 +109,7 @@ IMPLICIT_11_WAY = [
 # 11_WAY + first-level senses, sorting to ensure same index-label mapping
 IMPLICIT_15_WAY = sorted(IMPLICIT_4_WAY + IMPLICIT_11_WAY)
 
-# from https://github.com/nikitakit/self-attentive-parser/blob/master/src/parse_nk.py
+# https://github.com/nikitakit/self-attentive-parser/blob/master/src/parse_nk.py
 TOKEN_MAPPING = {
     "-LRB-": "(",
     "-RRB-": ")",

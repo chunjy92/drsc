@@ -31,11 +31,12 @@ class DRSCExperiment(Experiment):
       bert_vocab_file = os.path.join(bert_model, const.BERT_VOCAB_FILE)
 
       self.embedding = embedding.BERTEmbedding(
+        model=self.hp.model,
         bert_config_file=bert_config_file,
         vocab_file=bert_vocab_file,
         init_checkpoint=bert_init_ckpt,
         batch_size=self.hp.batch_size,
-        max_arg_length=self.hp.max_arg_length,
+        max_seq_length=self.hp.max_seq_length,
         truncation_mode=self.hp.truncation_mode,
         do_lower_case=self.hp.do_lower_case,
         finetune_embedding=self.hp.finetune_embedding,
@@ -83,7 +84,7 @@ class DRSCExperiment(Experiment):
     if self.hp.model == "feedforward":
       self.model = model.FeedForward(
         labels=self.labels,
-        max_arg_length=self.hp.max_arg_length,
+        max_seq_length=self.hp.max_seq_length,
         word_vector_width=self.hp.word_vector_width,
         hidden_size=self.hp.hidden_size,
         num_hidden_layers=self.hp.num_hidden_layers,
@@ -102,11 +103,37 @@ class DRSCExperiment(Experiment):
         finetune_embedding=self.hp.finetune_embedding,
         split_args_in_embedding=self.hp.split_args_in_embedding
       )
-    else:
-      self.model = model.Attentional(
+    elif self.hp.model == 'block_attn':
+      self.model = model.BlockAttentional(
+        model=self.hp.model,
         labels=self.labels,
-        attention_type=self.hp.model,
-        max_arg_length=self.hp.max_arg_length,
+        attention_type=self.hp.attention,
+        max_seq_length=self.hp.max_seq_length,
+        word_vector_width=self.hp.word_vector_width,
+        hidden_size=self.hp.hidden_size,
+        num_hidden_layers=self.hp.num_hidden_layers,
+        num_attention_heads=self.hp.num_attention_heads,
+        learning_rate=self.hp.learning_rate,
+        optimizer=self.hp.optimizer,
+        num_train_steps=self.num_train_steps,
+        num_warmup_steps=self.num_train_steps,
+        embedding=self.embedding,
+        embedding_name=self.hp.embedding,
+        embedding_shape=self.embedding_shape,
+        is_training=is_training,
+        sense_type=self.hp.sense_type,
+        pooling_action=self.hp.pooling_action,
+        conn_action=self.hp.conn_action,
+        do_pooling_first=self.hp.do_pooling_first,
+        finetune_embedding=self.hp.finetune_embedding,
+        split_args_in_embedding=self.hp.split_args_in_embedding
+      )
+    else:
+      self.model = model.MaskAttentional(
+        model=self.hp.model,
+        labels=self.labels,
+        attention_type=self.hp.attention,
+        max_seq_length=self.hp.max_seq_length,
         word_vector_width=self.hp.word_vector_width,
         hidden_size=self.hp.hidden_size,
         num_hidden_layers=self.hp.num_hidden_layers,
@@ -189,10 +216,6 @@ class DRSCExperiment(Experiment):
 
           ops, feed_dict = \
             self.model.postprocess_batch(batch, fetch_ops=fetch_ops)
-
-
-          # _, preds, per_loss, correct = sess.run(ops, feed_dict=feed_dict)
-          # ops += [self.summary_op]
           ops.append(self.summary_op)
           _, preds, per_loss, correct, summary = sess.run(ops,
                                                           feed_dict=feed_dict)
@@ -211,9 +234,8 @@ class DRSCExperiment(Experiment):
             mean_loss = np.mean(all_loss)
             mean_acc = np.mean(all_correct)
 
-            msg_header = \
-              "[Epoch {} Batch {}/{}]".format(epoch, i+1, num_batches)
-            self.display_log(c, msg_header, mean_loss, mean_acc)
+            self.display_log(c, f"Epoch {epoch}", i+1, num_batches,
+                             mean_loss, mean_acc)
 
             all_preds = []
             all_correct = []
@@ -221,13 +243,9 @@ class DRSCExperiment(Experiment):
 
         if (i+1) % self.hp.log_every != 0:
           c = Counter(all_preds)
-
-          mean_loss = np.mean(all_loss)
-          mean_acc = np.mean(all_correct)
-
-          msg_header = \
-            "[Epoch {} Batch {}/{}]".format(epoch, i + 1, num_batches)
-          self.display_log(c, msg_header, mean_loss, mean_acc)
+          self.display_log(c, f"Epoch {epoch}", i + 1, num_batches,
+                           mean_loss=np.mean(all_loss),
+                           mean_acc=np.mean(all_correct))
 
         saved_path = saver.save(sess, self.model_ckpt_path)
         tf.logging.info(f"Saved model parameters at {saved_path}")
@@ -279,13 +297,11 @@ class DRSCExperiment(Experiment):
           c = Counter(preds)
           all_counter.update(c)
 
-          msg_header = "[EVAL Batch {}/{}]".format(i+1, num_batches)
-          self.display_log(c, msg_header, loss, acc)
+          self.display_log(c, "EVAL", i + 1, num_batches, loss, acc)
 
-        msg_header = "[EVAL FINAL]"
-        mean_loss = np.mean(all_loss)
-        mean_acc = np.mean(all_correct)
-        self.display_log(all_counter, msg_header, mean_loss, mean_acc)
+        self.display_log(all_counter, "EVAL FINAL",
+                         mean_loss=np.mean(all_loss),
+                         mean_acc=np.mean(all_correct))
 
   ################################## PREDICT ###################################
   def predict(self):
@@ -349,14 +365,12 @@ class DRSCExperiment(Experiment):
             c = Counter(preds)
             all_counter.update(c)
 
-            msg_header = \
-              "[{} Batch {}/{}]".format(dataset_type.upper(), i+1, num_batches)
-            self.display_log(c, msg_header, mean_loss=None, mean_acc=acc)
+            self.display_log(c, dataset_type.upper(), i+1, num_batches,
+                             mean_acc=acc)
 
-          msg_header = f"[{dataset_type.upper()} FINAL]"
-          mean_acc = np.mean(all_correct)
-          self.display_log(all_counter, msg_header, mean_loss=None,
-                           mean_acc=mean_acc)
+          self.display_log(all_counter, f"{dataset_type.upper()} FINAL",
+                           mean_loss=None,
+                           mean_acc=np.mean(all_correct))
 
           # convert label_id preds to labels
           preds_str = [self.i2l(pred) for pred in all_preds]

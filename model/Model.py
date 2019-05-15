@@ -13,8 +13,9 @@ __author__ = 'Jayeol Chun'
 class Model(ABC):
   def __init__(self,
                labels=None,
+               model=None,
                attention_type=None,
-               max_arg_length=128,
+               max_seq_length=128,
                word_vector_width=768,
                hidden_size=768,
                num_hidden_layers=3,
@@ -38,6 +39,7 @@ class Model(ABC):
                scope=None):
     # model architecture will slightly vary depending on combinations of:
     # [dataset_type, pooling_action, conn_action]
+    self.model = model
     self.attention_type = attention_type
     self.sense_type = sense_type  # see const.DATASET_TYPES
     self.pooling_action = pooling_action  # see const.POOLING_ACTIONS
@@ -47,7 +49,8 @@ class Model(ABC):
     self.embedding_shape = embedding_shape
 
     # model settings
-    self.max_arg_length = max_arg_length
+    self.max_seq_length = max_seq_length
+    self.max_arg_length = int(max_seq_length / 2)
     self.word_vector_width = word_vector_width
     self.hidden_size = hidden_size
     self.num_hidden_layers = num_hidden_layers
@@ -77,6 +80,9 @@ class Model(ABC):
     self.is_bert_embedding = self.embedding_name == 'bert'
     self.is_finetunable_bert_embedding = \
       self.is_bert_embedding and self.finetune_embedding
+
+    if not scope:
+      scope = self.model
 
     self.build(scope)
 
@@ -118,7 +124,6 @@ class Model(ABC):
       var_list = tf.trainable_variables()
       tf.get_default_graph().clear_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
 
-      # trainable_vars_no_bert = []
       for var in var_list:
         if not var.name.startswith("bert"):
           tf.add_to_collection(tf.GraphKeys.TRAINABLE_VARIABLES, var)
@@ -172,19 +177,25 @@ class Model(ABC):
 
     if self.is_bert_embedding:
       placeholer_ops = self.embedding.get_all_placeholder_ops()
-
-      if self.split_args_in_embedding:
+      if self.model.startswith("mask"):
         self.arg = placeholer_ops[0]
         self.conn = placeholer_ops[1]
         self.label = placeholer_ops[2]
         self.arg_attn_mask = placeholer_ops[3]
+        self.segment_ids = placeholer_ops[4]
       else:
-        self.arg1 = placeholer_ops[0]
-        self.arg2 = placeholer_ops[1]
-        self.conn = placeholer_ops[2]
-        self.label = placeholer_ops[3]
-        self.arg1_attn_mask = placeholer_ops[4]
-        self.arg2_attn_mask = placeholer_ops[5]
+        if self.split_args_in_embedding:
+          self.arg = placeholer_ops[0]
+          self.conn = placeholer_ops[1]
+          self.label = placeholer_ops[2]
+          self.arg_attn_mask = placeholer_ops[3]
+        else:
+          self.arg1 = placeholer_ops[0]
+          self.arg2 = placeholer_ops[1]
+          self.conn = placeholer_ops[2]
+          self.label = placeholer_ops[3]
+          self.arg1_attn_mask = placeholer_ops[4]
+          self.arg2_attn_mask = placeholer_ops[5]
 
       self.embedding_placeholder = None
       self.embedding_table = None

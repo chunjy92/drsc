@@ -60,7 +60,7 @@ class FeedForward(Model):
       self.build_input_pipeline()
 
       if self.is_bert_embedding:
-        arg_concat = self.embedding.get_arg_concat()
+        arg_concat = self.embedding.get_bert_arg()
         combined_output = self.apply_cls_pooling_fn(arg_concat)
       else:
         self.embedding_table = self.init_embedding(self.embedding_placeholder)

@@ -21,7 +21,7 @@ class PDTBProcessor(object):
   """
   def __init__(self,
                data_dir=const.CONLL,
-               max_arg_length=128,
+               max_seq_length=128,
                truncation_mode='normal',
                do_lower_case=False,
                sense_type='implicit',
@@ -40,7 +40,8 @@ class PDTBProcessor(object):
     self.drop_partial_data = drop_partial_data
 
     # preprocessing config
-    self.max_arg_length = max_arg_length
+    self.max_seq_length = max_seq_length
+    self.max_arg_length = int(max_seq_length/2)
     self.truncation_mode = truncation_mode
     self.do_lower_case = do_lower_case
 

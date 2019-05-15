@@ -16,11 +16,12 @@ class BERTEmbedding(Embedding):
       2) split_arg_in_bert: whether to treat each arg as separate example
     """
   def __init__(self,
+               model,
                bert_config_file,
                vocab_file,
                init_checkpoint,
                batch_size=32,
-               max_arg_length=128,
+               max_seq_length=128,
                do_lower_case=False,
                finetune_embedding=False,
                split_args=False,
@@ -28,11 +29,14 @@ class BERTEmbedding(Embedding):
                truncation_mode="normal",
                padding_action='normal',
                scope=None):
+    self.model = model
+    self.is_mask_attentional_model = self.model.startswith("mask")
     self.bert_config_file = bert_config_file
     self.vocab_file = vocab_file
     self.init_checkpoint = init_checkpoint
     self.batch_size = batch_size
-    self.max_arg_length = max_arg_length
+    self.max_seq_length = max_seq_length
+    self.max_arg_length = int(max_seq_length/2)
     self.do_lower_case = do_lower_case
     self.split_args = split_args
     self.finetune_embedding = finetune_embedding
@@ -58,11 +62,11 @@ class BERTEmbedding(Embedding):
     self._vocab = tokenization.load_vocab(self.vocab_file)
 
     # max_position_embeddings==512
-    if self.max_arg_length > self.bert_config.max_position_embeddings:
+    if self.max_seq_length > self.bert_config.max_position_embeddings:
       raise ValueError(
         "Cannot use sequence length %d because the BERT model "
         "was only trained up to sequence length %d" %
-        (self.max_arg_length, self.bert_config.max_position_embeddings))
+        (self.max_seq_length, self.bert_config.max_position_embeddings))
 
     self.build()
 
@@ -125,7 +129,34 @@ class BERTEmbedding(Embedding):
 
       self.sequence_output = self.all_encoder_layers[-1]
 
-  def build_single_arg(self, scope=None):
+  def build_mask_attn(self, scope=None):
+    tf.logging.debug("Building mask attention pipeline in BERT Embedding")
+    self.arg = tf.placeholder(tf.int32, [None, self.max_seq_length],
+                              name='arg')
+    self.label = tf.placeholder(tf.int32, [None], name="label")
+
+    # TODO: max_len for conn???
+    self.conn = tf.placeholder(tf.int32, [None, self.max_seq_length],
+                               name="conn")
+
+    # for bert embedding
+    self.arg_attn_mask = tf.placeholder(
+      tf.int32, [None, self.max_seq_length], name="arg_attn_mask")
+
+    self.segment_ids = tf.placeholder(
+      tf.int32, [None, self.max_seq_length], name="segment_ids")
+
+    bert_model = modeling.BertModel(config=self.bert_config,
+                                    is_training=self.is_training,
+                                    input_ids=self.arg,
+                                    input_mask=self.arg_attn_mask,
+                                    token_type_ids=self.segment_ids,
+                                    use_one_hot_embeddings=False,
+                                    scope='bert')
+    self.bert_arg = bert_model.get_sequence_output()
+    self.bert_mask_concat = self.arg_attn_mask
+
+  def build_block_attn_single_arg(self, scope=None):
     tf.logging.debug("Building single arg pipeline in BERT Embedding")
     self.arg = tf.placeholder(tf.int32, [None, self.max_arg_length],
                               name='arg')
@@ -161,12 +192,12 @@ class BERTEmbedding(Embedding):
     seq_length = input_shape[1]
     width = input_shape[2]
 
-    self.bert_arg_concat = tf.reshape(bert_arg,
-                                      shape=[batch_size/2, seq_length*2, width])
+    self.bert_arg = tf.reshape(bert_arg,
+                               shape=[batch_size/2, seq_length*2, width])
     self.bert_mask_concat = tf.reshape(self.arg_attn_mask,
                                        shape=[batch_size/2, seq_length*2])
 
-  def build_two_args(self, scope=None):
+  def build_block_attn_two_args(self, scope=None):
     tf.logging.debug("Building two args pipeline in BERT Embedding")
     self.arg1 = tf.placeholder(tf.int32, [None, self.max_arg_length],
                                name="arg1")
@@ -202,7 +233,7 @@ class BERTEmbedding(Embedding):
                                     scope='bert')
 
     # [batch, arg_len*2, hidden_size]
-    self.bert_arg_concat = bert_model.get_sequence_output()
+    self.bert_arg = bert_model.get_sequence_output()
 
     # # custom
     # self.build_bert_model(input_ids=arg_concat,
@@ -213,13 +244,74 @@ class BERTEmbedding(Embedding):
 
   def build(self, scope=None):
     """"""
-    if self.split_args:
-      self.build_single_arg(scope)
+    if self.is_mask_attentional_model:
+      self.build_mask_attn(scope)
     else:
-      self.build_two_args(scope)
+      if self.split_args:
+        self.build_block_attn_single_arg(scope)
+      else:
+        self.build_block_attn_two_args(scope)
 
   ############################### POSTPROCESS ##################################
   def convert_to_ids(self, examples, l2i, **kwargs):
+    if self.is_mask_attentional_model:
+      return self.convert_to_ids_mask_attn(examples, l2i, **kwargs)
+    else:
+      return self.convert_to_ids_block_attn(examples, l2i, **kwargs)
+
+  def convert_to_ids_mask_attn(self, examples, l2i, **kwargs):
+    args, conn, labels, arg_mask, arg_segment_ids = [], [], [], [], []
+
+    for example in examples:
+      tokens_a = self.tokenizer.tokenize(example.arg1)
+      tokens_b = self.tokenizer.tokenize(example.arg2)
+
+      _truncate_seq_pair(tokens_a, tokens_b, self.max_seq_length-3)
+
+      tokens = []
+      segment_ids = []
+      tokens.append("[CLS]")
+      segment_ids.append(0)
+      for token in tokens_a:
+        tokens.append(token)
+        segment_ids.append(0)
+      tokens.append("[SEP]")
+      segment_ids.append(0)
+
+      for token in tokens_b:
+        tokens.append(token)
+        segment_ids.append(1)
+      tokens.append("[SEP]")
+      segment_ids.append(1)
+
+      input_ids = self.tokenizer.convert_tokens_to_ids(tokens)
+
+      # The mask has 1 for real tokens and 0 for padding tokens. Only real
+      # tokens are attended to.
+      input_mask = [1] * len(input_ids)
+
+      # Zero-pad up to the sequence length.
+      while len(input_ids) < self.max_seq_length:
+        input_ids.append(0)
+        input_mask.append(0)
+        segment_ids.append(0)
+
+      assert len(input_ids) == self.max_seq_length
+      assert len(input_mask) == self.max_seq_length
+      assert len(segment_ids) == self.max_seq_length
+
+      label_id = l2i(example.label)
+
+      args.append(input_ids)
+      # TODO: Connectives jsut padding values
+      conn.append([self.vocab[const.PAD]] * self.max_seq_length)
+      labels.append(label_id)
+      arg_mask.append(input_mask)
+      arg_segment_ids.append(segment_ids)
+
+    return args, conn, labels, arg_mask, arg_segment_ids
+
+  def convert_to_ids_block_attn(self, examples, l2i, **kwargs):
     arg1, arg2, conn, labels, arg1_mask, arg2_mask = [], [], [], [], [], []
 
     for example in examples:
@@ -287,45 +379,68 @@ class BERTEmbedding(Embedding):
     return arg1, arg2, conn, labels, arg1_mask, arg2_mask
 
   ################################## GETTERS ###################################
-  def get_arg_concat(self):
-    return self.bert_arg_concat
+  def get_bert_arg(self):
+    return self.bert_arg
 
   def get_attn_mask(self):
     return self.bert_mask_concat
 
   ############################### PLACEHOLDERS #################################
-  def get_arg(self):
+  def get_arg_placeholder(self):
     """only if self.split_arg == True"""
     return self.arg
 
-  def get_arg_mask(self):
+  def get_arg_mask_placeholder(self):
     """only if self.split_arg == True"""
     return self.arg_attn_mask
 
-  def get_arg1(self):
+  def get_arg1_placeholder(self):
     return self.arg1
 
-  def get_arg2(self):
+  def get_arg2_placeholder(self):
     return self.arg2
 
-  def get_label(self):
+  def get_label_placeholder(self):
     return self.label
 
-  def get_conn(self):
+  def get_conn_placeholder(self):
     return self.conn
 
-  def get_arg1_mask(self):
+  def get_arg1_mask_placeholder(self):
     return self.arg1_attn_mask
 
-  def get_arg2_mask(self):
+  def get_arg2_mask_placeholder(self):
     return self.arg2_attn_mask
+
+  def get_segment_ids_placeholder(self):
+    return self.segment_ids
 
   def get_all_placeholder_ops(self):
     ret = []
-    if self.split_args:
-      ret = [self.arg, self.conn, self.label, self.arg_attn_mask]
+    if self.is_mask_attentional_model:
+      ret = [self.arg, self.conn, self.label, self.arg_attn_mask,
+             self.segment_ids]
     else:
-      ret = [self.arg1, self.arg2, self.conn, self.label,
-             self.arg1_attn_mask, self.arg2_attn_mask]
+      if self.split_args:
+        ret = [self.arg, self.conn, self.label, self.arg_attn_mask]
+      else:
+        ret = [self.arg1, self.arg2, self.conn, self.label,
+               self.arg1_attn_mask, self.arg2_attn_mask]
 
     return ret
+
+def _truncate_seq_pair(tokens_a, tokens_b, max_length):
+  """Truncates a sequence pair in place to the maximum length."""
+
+  # This is a simple heuristic which will always truncate the longer sequence
+  # one token at a time. This makes more sense than truncating an equal percent
+  # of tokens from each, since if one sequence is very short then each token
+  # that's truncated likely contains more information than a longer sequence.
+  while True:
+    total_length = len(tokens_a) + len(tokens_b)
+    if total_length <= max_length:
+      break
+    if len(tokens_a) > len(tokens_b):
+      tokens_a.pop()
+    else:
+      tokens_b.pop()
